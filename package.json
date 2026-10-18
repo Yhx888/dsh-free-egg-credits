@@ -1,10 +1,10 @@
 {
   "name": "dsh-free-egg-credits",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "description": "Free Egg 积分：在 DSH 界面里显示各反代网关（WorkBuddy / Qoder）账号的可用积分、每日签到状态，以及每条对话消耗的积分。",
   "license": "MIT",
-  "author": "Yhx888 (Hahayo)",
+  "author": "dsh-free-egg-credits contributors",
   "homepage": "https://github.com/Yhx888/dsh-free-egg-credits#readme",
   "repository": {
     "type": "git",

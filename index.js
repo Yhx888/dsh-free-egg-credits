@@ -29,6 +29,11 @@ const DEFAULTS = {
   checkinRetryMinutes: 10,
   refreshSeconds: 30,
   creditsPer1k: {},
+  // 哪些 DSH provider 算「free-egg 模型」：这些 provider 的对话即使还没算出单价，
+  // 底栏也要显示积分预估。
+  freeEggProviders: ['free-egg', 'workbuddy', 'qoder', 'new-api'],
+  // 目录倍率折算的兜底基线（积分/千 token/倍率单位）；0 = 只用实测台账自动校准。
+  catalogBaseCreditsPer1k: 0,
   qoder: null,
 }
 
@@ -44,6 +49,7 @@ const PACKAGE_CONFIG_PATH = (() => {
 export function apply(ctx, rawConfig = {}) {
   const opts = normalizeConfig(rawConfig)
   const state = createState()
+  state.freeEggProviders = new Set(opts.freeEggProviders)
   const log = makeLogger()
   const gateway = createGateway(opts, log)
   const qoderGateway = opts.qoder ? createQoderGateway(opts, log) : null
@@ -78,7 +84,7 @@ export function apply(ctx, rawConfig = {}) {
 
   async function refresh(force) {
     const work = refreshGateway(state, gateway, opts, log, force)
-    if (qoderGateway) await refreshQoder(state, { qoder: qoderGateway }, log)
+    if (qoderGateway) await refreshQoder(state, { qoder: qoderGateway }, opts, log)
     return work
   }
 
@@ -154,7 +160,7 @@ export function apply(ctx, rawConfig = {}) {
     }
     state.qoder = state.qoder && state.qoder.enabled ? state.qoder : { enabled: true }
     state.qoder.updatedAt = 0 // 强制下次 snapshot 重拉积分
-    await refreshQoder(state, { qoder: qoderGateway }, log)
+    await refreshQoder(state, { qoder: qoderGateway }, opts, log)
     const rows = Array.isArray(result?.results) ? result.results : []
     sendJson(res, 200, {
       ok: true,
@@ -196,9 +202,19 @@ function normalizeConfig(raw) {
     checkinRetryMinutes: clampInt(source.checkinRetryMinutes, 1, 720, DEFAULTS.checkinRetryMinutes),
     refreshSeconds: clampInt(source.refreshSeconds, 5, 3600, DEFAULTS.refreshSeconds),
     creditsPer1k: source.creditsPer1k && typeof source.creditsPer1k === 'object' ? source.creditsPer1k : {},
+    freeEggProviders: normalizeProviders(source.freeEggProviders),
+    catalogBaseCreditsPer1k: Math.max(0, toNumber(source.catalogBaseCreditsPer1k) || 0),
     // Qoder 反代网关（qoder2api-hub）：null = 未配置不启用
     qoder: normalizeQoder(source.qoder),
   }
+}
+
+function normalizeProviders(raw) {
+  const list = Array.isArray(raw) ? raw : DEFAULTS.freeEggProviders
+  const providers = list
+    .map(value => String(value || '').trim().toLowerCase())
+    .filter(Boolean)
+  return providers.length > 0 ? [...new Set(providers)] : DEFAULTS.freeEggProviders
 }
 
 /** Qoder 网关子配置：只认 baseUrl / panelPasswordFile / panelPassword / enabled。 */
@@ -329,6 +345,8 @@ function createGateway(opts, log) {
   return {
     baseUrl: opts.gatewayBaseUrl,
     overview: () => request('/panel/api/overview'),
+    // 模型目录：每模型带上游积分倍率（"x0.11" / "x0.71 credits"），用于给未实测模型估价。
+    models: () => request('/v1/models'),
     checkin: uid =>
       request(`/panel/api/accounts/${encodeURIComponent(uid)}/checkin`, { method: 'POST', timeoutMs: 60_000 }),
   }
@@ -429,6 +447,16 @@ function createQoderGateway(opts, log) {
       if (!response.ok) throw new Error(`Qoder /credits/summary → HTTP ${response.status}`)
       return JSON.parse(text)
     },
+    // 模型目录：公开只读接口，每模型带 price_factor（0 = 免费模型）
+    models: async () => {
+      const response = await fetch(qoder.baseUrl + '/models', {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(10000),
+      })
+      const text = await response.text()
+      if (!response.ok) throw new Error(`Qoder /models → HTTP ${response.status}`)
+      return JSON.parse(text)
+    },
     // 手动签到（设置页按钮用）；调度器每日 09/21 自动跑，这里只是手动补
     checkin: async () => request('/accounts/checkin', { method: 'POST', timeoutMs: 300000 }),
     accounts: () => request('/accounts'),
@@ -475,7 +503,7 @@ function parseGatewayTime(value) {
  * 把 Qoder 网关的积分摘要并入快照。账号每行转成与 WorkBuddy 账号同形的状态行，
  * realm 固定 'qoder'，前端按 realm 分组渲染。
  */
-async function refreshQoder(state, gateway, log) {
+async function refreshQoder(state, gateway, opts, log) {
   const qoder = gateway.qoder
   if (!state.qoder) {
     // 首轮没有任何快照时也要有承载 fetching 标记的对象
@@ -489,12 +517,28 @@ async function refreshQoder(state, gateway, log) {
   const cached = state.qoder
   if (cached && cached.enabled && now - cached.updatedAt < 60_000) return
   if (cached && cached.fetching) return cached.fetching
+  // Qoder 目录用于识别免费模型（price_factor=0）与给 paid 模型估价，30 分钟一拉。
+  const needModels = !state.models.qoderAt || now - state.models.qoderAt > MODELS_TTL_MS
   const work = (async () => {
     try {
-      const [summary, scheduler] = await Promise.all([
+      const [summary, scheduler, catalog] = await Promise.all([
         qoder.credits(),
         qoder.scheduler().catch(() => null),
+        needModels
+          ? qoder.models().catch(error => {
+              log('读取 Qoder 模型目录失败', error)
+              return null
+            })
+          : null,
       ])
+      if (catalog) {
+        state.models.qoder = parseQoderCatalog(catalog)
+        state.models.qoderAt = Date.now()
+        buildPrice(state, opts)
+      } else if (needModels) {
+        // 失败后 5 分钟再试，避免每轮 Qoder 刷新都重复失败。
+        state.models.qoderAt = now - MODELS_TTL_MS + 5 * 60_000
+      }
       const accounts = (Array.isArray(summary?.accounts) ? summary.accounts : []).map(row => ({
         uid: String(row.uid || ''),
         nickname: String(row.nickname || ''),
@@ -558,6 +602,7 @@ function createState() {
     price: {},
     priceDetail: [],
     priceBasis: 'none',
+    priceEstimated: 0,
     online: false,
     error: '',
     updatedAt: 0,
@@ -569,6 +614,12 @@ function createState() {
     lastSessionId: '',
     recentCache: null,
     qoder: null,
+    // 网关模型目录（倍率 / price_factor），用于给未实测模型估价
+    models: { workbuddy: [], qoder: [], workbuddyAt: 0, qoderAt: 0, fetching: null },
+    // 目录倍率的实测校准基线（积分/千 token/倍率单位）
+    catalogBase: 0,
+    // 哪些 DSH provider 视为 free-egg 模型（不区分大小写）
+    freeEggProviders: new Set(),
   }
 }
 
@@ -590,6 +641,8 @@ async function refreshGateway(state, gateway, opts, log, force) {
       applyOverview(state, overview, opts)
       state.online = true
       state.error = ''
+      // 模型目录决定「目录价」能否覆盖未实测模型；失败不影响主快照。
+      await refreshWorkbuddyModels(state, gateway, opts, log)
     } catch (error) {
       state.online = false
       state.error = errorMessage(error)
@@ -600,6 +653,63 @@ async function refreshGateway(state, gateway, opts, log, force) {
     }
   })()
   return state.fetching
+}
+
+/** 网关模型目录的本地缓存时长：网关侧本身缓存 1 小时，这里没必要每轮快照都拉。 */
+const MODELS_TTL_MS = 30 * 60_000
+
+/** 解析网关的积分倍率字符串："x0.11" / "x0.71 credits" / "0.06" → 数字。 */
+function parseCreditMultiplier(value) {
+  if (typeof value !== 'string') return null
+  const match = /x?\s*([0-9]+(?:\.[0-9]+)?)/i.exec(value)
+  if (!match) return null
+  const number = Number(match[1])
+  return Number.isFinite(number) ? number : null
+}
+
+async function refreshWorkbuddyModels(state, gateway, opts, log) {
+  const now = Date.now()
+  if (state.models.workbuddyAt && now - state.models.workbuddyAt < MODELS_TTL_MS) return
+  if (state.models.fetching) return state.models.fetching
+  state.models.fetching = (async () => {
+    try {
+      const payload = await gateway.models()
+      const rows = Array.isArray(payload?.data) ? payload.data : []
+      const list = []
+      for (const row of rows) {
+        const id = row && typeof row.id === 'string' ? row.id : ''
+        if (!id) continue
+        list.push({ id, multiplier: parseCreditMultiplier(row.credits) })
+      }
+      state.models.workbuddy = list
+      state.models.workbuddyAt = Date.now()
+      // 目录到达后重算单价：未实测模型靠倍率折算。
+      buildPrice(state, opts)
+    } catch (error) {
+      log('读取网关模型目录失败', error)
+      // 失败后 5 分钟再试，避免每次快照轮询都打网关。
+      state.models.workbuddyAt = Date.now() - MODELS_TTL_MS + 5 * 60_000
+    } finally {
+      state.models.fetching = null
+    }
+  })()
+  return state.models.fetching
+}
+
+/** Qoder /models → [{ id, aliases, factor }]；factor 为 0 即免费模型。 */
+function parseQoderCatalog(payload) {
+  const rows = Array.isArray(payload?.data) ? payload.data : []
+  const list = []
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue
+    const id = typeof row.id === 'string' ? row.id : ''
+    if (!id) continue
+    const aliases = Array.isArray(row.aliases)
+      ? row.aliases.filter(alias => typeof alias === 'string' && alias)
+      : []
+    list.push({ id, aliases, factor: toNumber(row.price_factor) })
+  }
+  return list
 }
 
 function applyOverview(state, overview, opts) {
@@ -653,8 +763,11 @@ function applyOverview(state, overview, opts) {
 }
 
 /**
- * 积分单价：按 (账号, 模型) 实测扣费的 EMA × 样本数加权，得到每个模型的
- * 积分/千 token；配置 creditsPer1k 覆盖优先。
+ * 积分单价分三层，后面的覆盖前面的：
+ *   1. 网关实测台账（model_costs 的 EMA × 样本数加权）——真值；
+ *   2. 目录倍率折算——没实测过的模型用「实测单价 / 倍率」求本次校准基线，再乘目录倍率
+ *      （WorkBuddy /v1/models 的 credits、Qoder /models 的 price_factor；0 = 免费模型）；
+ *   3. 配置 creditsPer1k —— 永远最后覆盖。
  */
 function buildPrice(state, opts) {
   const models = new Map()
@@ -685,6 +798,75 @@ function buildPrice(state, opts) {
     detail.push({ model, costPer1k: value, samples: current.samples, accounts: current.rows, source: 'gateway' })
   }
 
+  // 目录条目：每个上游模型一组键（canonical + aliases，去掉 cn:/global: 前缀）。
+  const catalogEntries = []
+  const seenCanonical = new Set()
+  const addCatalogEntry = (keys, multiplier) => {
+    const stripped = []
+    for (const key of keys) {
+      const model = stripRealm(key)
+      if (model && !stripped.includes(model)) stripped.push(model)
+    }
+    if (stripped.length === 0) return
+    const id = stripped[0].toLowerCase()
+    if (seenCanonical.has(id)) return
+    seenCanonical.add(id)
+    catalogEntries.push({ keys: stripped, multiplier })
+  }
+  for (const row of state.models.workbuddy) {
+    if (row.multiplier === null || row.multiplier === undefined) continue
+    addCatalogEntry([row.id], row.multiplier)
+  }
+  for (const row of state.models.qoder) {
+    addCatalogEntry([row.id, ...row.aliases], row.factor)
+  }
+
+  const multiplierOf = model => {
+    const lower = String(model || '').toLowerCase()
+    for (const entry of catalogEntries) {
+      for (const key of entry.keys) {
+        if (key.toLowerCase() === lower) return entry.multiplier
+      }
+    }
+    return null
+  }
+
+  // 校准基线：只用「有实测单价 + 有目录倍率」的模型，按样本数加权。
+  let weightedCost = 0
+  let weightedMultiplier = 0
+  for (const row of detail) {
+    if (row.source !== 'gateway') continue
+    const multiplier = multiplierOf(row.model)
+    if (!(multiplier > 0)) continue
+    const samples = Math.max(1, Number(row.samples) || 1)
+    weightedCost += row.costPer1k * samples
+    weightedMultiplier += multiplier * samples
+  }
+  const base = weightedMultiplier > 0
+    ? weightedCost / weightedMultiplier
+    : toNumber(opts.catalogBaseCreditsPer1k)
+  state.catalogBase = Number.isFinite(base) && base > 0 ? base : 0
+
+  // 目录估价：alias 也写进查表（大小写不敏感），但每个上游模型只在明细里留一行。
+  const pricedKeys = new Set(Object.keys(price).map(key => key.toLowerCase()))
+  for (const entry of catalogEntries) {
+    const multiplier = entry.multiplier
+    if (!Number.isFinite(multiplier) || multiplier < 0) continue
+    const keys = entry.keys.filter(key => !pricedKeys.has(key.toLowerCase()))
+    if (keys.length === 0) continue
+    // 倍率 0 = 上游声明的免费模型，0 积分是确定值而不是估算。
+    const isEstimate = multiplier > 0
+    const value = isEstimate
+      ? state.catalogBase > 0 ? Math.round(multiplier * state.catalogBase * 1e6) / 1e6 : null
+      : 0
+    if (value === null) continue
+    for (const key of keys) {
+      price[key] = value
+      pricedKeys.add(key.toLowerCase())
+    }
+    detail.push({ model: entry.keys[0], costPer1k: value, samples: 0, accounts: [], source: 'catalog', estimated: isEstimate })
+  }
+
   let overridden = false
   for (const [rawModel, rawValue] of Object.entries(opts.creditsPer1k || {})) {
     const model = stripRealm(rawModel)
@@ -695,15 +877,23 @@ function buildPrice(state, opts) {
     if (existing) {
       existing.costPer1k = value
       existing.source = 'config'
+      existing.estimated = false
     } else {
-      detail.push({ model, costPer1k: value, samples: 0, accounts: [], source: 'config' })
+      detail.push({ model, costPer1k: value, samples: 0, accounts: [], source: 'config', estimated: false })
     }
     overridden = true
   }
 
+  const measured = detail.filter(row => row.source === 'gateway').length
+  const estimated = detail.filter(row => row.estimated === true).length
   state.price = price
   state.priceDetail = detail.sort((left, right) => left.model.localeCompare(right.model))
-  state.priceBasis = Object.keys(price).length === 0 ? 'none' : overridden ? 'config' : 'gateway'
+  state.priceBasis = overridden
+    ? 'config'
+    : measured > 0
+      ? estimated > 0 ? 'gateway+catalog' : 'gateway'
+      : detail.length > 0 ? 'catalog' : 'none'
+  state.priceEstimated = estimated
 }
 
 // ---------------------------------------------------------------------------
@@ -719,9 +909,33 @@ function usageTokens(usage) {
   return input + output > 0 ? input + output : 0
 }
 
-function modelOfEvent(event) {
+/** 助手消息里的 provider + model：provider 决定这条对话算不算 free-egg 模型。 */
+function sourceOfEvent(event) {
   const source = event?.data?.message?.source
-  return source && typeof source.model === 'string' ? source.model : ''
+  if (!source || typeof source !== 'object') return { provider: '', model: '' }
+  return {
+    provider: typeof source.provider === 'string' ? source.provider : '',
+    model: typeof source.model === 'string' ? source.model : '',
+  }
+}
+
+/** 模型选择 / 请求头事件里的「当前 provider + model」，用于还没出第一轮回复时判断来源。 */
+function selectionOfEvent(event) {
+  const data = event?.data
+  if (event?.type === 'model/selection') {
+    return {
+      provider: typeof data?.provider === 'string' ? data.provider : '',
+      model: typeof data?.model === 'string' ? data.model : '',
+    }
+  }
+  if (event?.type === 'request/header') {
+    const config = data?.header?.config
+    return {
+      provider: typeof config?.provider === 'string' ? config.provider : '',
+      model: typeof config?.model === 'string' ? config.model : '',
+    }
+  }
+  return null
 }
 
 function createLedger(ctx, log) {
@@ -730,26 +944,43 @@ function createLedger(ctx, log) {
   function entry(id) {
     let current = sessions.get(id)
     if (!current) {
-      current = { turns: new Map(), loaded: false, loading: null }
+      current = {
+        turns: new Map(),
+        loaded: false,
+        loading: null,
+        selection: { provider: '', model: '' },
+        providers: new Set(),
+      }
       sessions.set(id, current)
     }
     return current
   }
 
-  function accumulate(target, turn, tokens, model) {
-    const current = target.get(turn) || { tokens: 0, models: new Set() }
+  function accumulate(target, turn, tokens, provider, model) {
+    const current = target.get(turn) || { tokens: 0, models: new Set(), providers: new Set() }
     current.tokens += tokens
+    if (provider) current.providers.add(provider)
     if (model) current.models.add(model)
     target.set(turn, current)
   }
 
   function note(sessionId, event) {
-    if (!event || event.type !== 'assistant/message') return
+    if (!event) return
+    const current = entry(sessionId)
+    const selection = selectionOfEvent(event)
+    if (selection) {
+      if (selection.provider) current.providers.add(selection.provider)
+      if (selection.provider || selection.model) current.selection = selection
+      return
+    }
+    if (event.type !== 'assistant/message') return
     const data = event.data || {}
     const tokens = usageTokens(data.usage)
     const turn = Number(data.turn)
     if (tokens <= 0 || !Number.isFinite(turn)) return
-    accumulate(entry(sessionId).turns, turn, tokens, modelOfEvent(event))
+    const source = sourceOfEvent(event)
+    if (source.provider) current.providers.add(source.provider)
+    accumulate(current.turns, turn, tokens, source.provider, source.model)
   }
 
   async function readEvents(sessionId) {
@@ -797,19 +1028,38 @@ function createLedger(ctx, log) {
       const events = await readEvents(sessionId)
       if (!Array.isArray(events)) return
       const folded = new Map()
+      const providers = new Set()
+      const selection = { provider: '', model: '' }
       for (const event of events) {
-        if (!event || event.type !== 'assistant/message') continue
+        if (!event) continue
+        const picked = selectionOfEvent(event)
+        if (picked) {
+          if (picked.provider) providers.add(picked.provider)
+          if (picked.provider || picked.model) {
+            selection.provider = picked.provider || selection.provider
+            selection.model = picked.model || selection.model
+          }
+          continue
+        }
+        if (event.type !== 'assistant/message') continue
         const data = event.data || {}
         const tokens = usageTokens(data.usage)
         const turn = Number(data.turn)
         if (tokens <= 0 || !Number.isFinite(turn)) continue
-        accumulate(folded, turn, tokens, modelOfEvent(event))
+        const source = sourceOfEvent(event)
+        if (source.provider) providers.add(source.provider)
+        accumulate(folded, turn, tokens, source.provider, source.model)
       }
       // 日志折叠是权威全集；读取期间新到的实时轮次保留下来。
       for (const [turn, data] of current.turns) {
         if (!folded.has(turn)) folded.set(turn, data)
+        for (const provider of data.providers || []) providers.add(provider)
       }
+      for (const provider of current.providers) providers.add(provider)
       current.turns = folded
+      current.providers = providers
+      // 读取期间实时事件更新过的选择优先，只有日志里更明确的 provider 才补进来。
+      if (!current.selection.provider && selection.provider) current.selection = selection
       current.loaded = true
     })()
       .catch(error => log('折叠会话用量失败 ' + shortId(sessionId), error))
@@ -928,11 +1178,36 @@ function createCheckin(opts, gateway, state, log) {
 // 组装响应
 // ---------------------------------------------------------------------------
 
-function estimateCredits(state, tokens, models) {
+/** 这个 provider 是否算 free-egg 模型（不区分大小写）。 */
+function isFreeEggProvider(state, provider) {
+  const name = String(provider || '').trim().toLowerCase()
+  if (!name) return false
+  return state.freeEggProviders instanceof Set && state.freeEggProviders.has(name)
+}
+
+/** 单价查表：先精确匹配，再小写兜底（Qoder 目录 id 形如 Qwen3.8-Flash）。 */
+function priceOf(state, model) {
+  const key = stripRealm(model)
+  if (!key) return null
+  if (Number.isFinite(state.price[key])) return state.price[key]
+  const lower = key.toLowerCase()
+  for (const [name, value] of Object.entries(state.price)) {
+    if (name.toLowerCase() === lower && Number.isFinite(value)) return value
+  }
+  return null
+}
+
+/**
+ * 折算一轮积分。providers 为空表示来源未知（旧数据）→ 仍按模型名尽量折算；
+ * 有 provider 但不是 free-egg → 不计积分（返回 null，底栏只统计 free-egg 部分）。
+ */
+function estimateCredits(state, tokens, models, providers) {
   if (!tokens || tokens <= 0) return 0
+  const list = providers ? [...providers] : []
+  if (list.length > 0 && !list.some(provider => isFreeEggProvider(state, provider))) return null
   const prices = []
   for (const model of models || []) {
-    const value = state.price[stripRealm(model)]
+    const value = priceOf(state, model)
     if (Number.isFinite(value)) prices.push(value)
   }
   if (prices.length === 0) return null
@@ -942,9 +1217,22 @@ function estimateCredits(state, tokens, models) {
 
 function sessionView(state, ledger, sessionId) {
   const id = String(sessionId || '')
-  if (!id) return { id: '', turns: [], totalTokens: 0, totalCredits: 0, known: false, loaded: false }
+  const blank = {
+    turns: [],
+    totalTokens: 0,
+    totalCredits: 0,
+    pricedTurns: 0,
+    known: false,
+    loaded: false,
+    missingPrice: false,
+    providers: [],
+    currentProvider: '',
+    currentModel: '',
+    freeEgg: false,
+  }
+  if (!id) return { id: '', ...blank }
   const current = ledger.peek(id)
-  if (!current) return { id, turns: [], totalTokens: 0, totalCredits: 0, known: false, loaded: false }
+  if (!current) return { id, ...blank }
 
   const turns = []
   let totalTokens = 0
@@ -953,15 +1241,29 @@ function sessionView(state, ledger, sessionId) {
   let missingPrice = false
   for (const [turn, data] of [...current.turns.entries()].sort((left, right) => left[0] - right[0])) {
     const models = [...data.models]
-    const credits = estimateCredits(state, data.tokens, models)
+    const providers = [...(data.providers || [])]
+    const credits = estimateCredits(state, data.tokens, models, providers)
     if (credits === null) missingPrice = true
     else {
       totalCredits += credits
       pricedTurns += 1
     }
     totalTokens += data.tokens
-    turns.push({ turn, tokens: data.tokens, models, credits })
+    turns.push({ turn, tokens: data.tokens, models, providers, credits })
   }
+
+  const providers = new Set(current.providers || [])
+  for (const data of current.turns.values()) {
+    for (const provider of data.providers || []) providers.add(provider)
+  }
+  const currentProvider = current.selection && current.selection.provider ? current.selection.provider : ''
+  const currentModel = current.selection && current.selection.model ? current.selection.model : ''
+  // 「是不是 free-egg 模型」只看 provider：当前选中的或这轮对话里用过的任意一个。
+  const freeEgg = Boolean(
+    (currentProvider && isFreeEggProvider(state, currentProvider)) ||
+      [...providers].some(provider => isFreeEggProvider(state, provider)),
+  )
+
   return {
     id,
     turns,
@@ -971,6 +1273,10 @@ function sessionView(state, ledger, sessionId) {
     known: current.loaded || current.turns.size > 0,
     loaded: current.loaded,
     missingPrice,
+    providers: [...providers],
+    currentProvider,
+    currentModel,
+    freeEgg,
   }
 }
 
@@ -1027,6 +1333,9 @@ function buildPayload(state, ledger, opts, sessionId) {
       priceByModel: state.price,
       priceDetail: state.priceDetail,
       priceBasis: state.priceBasis,
+      priceEstimated: state.priceEstimated || 0,
+      catalogBase: state.catalogBase || 0,
+      freeEggProviders: [...(state.freeEggProviders || [])],
       autoCheckin: opts.autoCheckin,
     },
     qoder,

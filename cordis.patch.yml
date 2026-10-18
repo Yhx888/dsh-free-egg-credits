@@ -21,6 +21,11 @@
         refreshSeconds: 30
         # 积分单价覆盖：模型名 → 积分/千 token。留空则用网关实测扣费台账折算。
         creditsPer1k: {}
+        # 哪些 DSH provider 视为「free-egg 模型」：这些 provider 的对话即使还没算出单价，
+        # 输入框下方也常显积分预估（默认 free-egg / workbuddy / qoder / new-api）。
+        freeEggProviders: [free-egg, workbuddy, qoder, new-api]
+        # 目录倍率折算的兜底基线（积分/千 token/倍率单位）；0 = 只用实测台账自动校准。
+        catalogBaseCreditsPer1k: 0
         # Qoder 反代网关（qoder2api-hub，127.0.0.1:8790）：积分并列显示。
         # panelPasswordFile 指向面板密码文件（本机路径，勿提交进仓库）；留空回退面板默认 admin。
         qoder:

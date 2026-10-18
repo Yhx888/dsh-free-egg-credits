@@ -12,13 +12,15 @@
 （WorkBuddy / Qoder）里各账号的**可用积分**、**每日签到状态**，以及**每条对话折算消耗的积分**
 直接显示在界面里——侧边栏、输入框下方、每轮对话末尾和设置页各有一个落点。
 
-> 积分为**折算值**：单价取自网关对上游 `usage.credit` 的实测台账，界面统一带 `≈` 标记。
+> 积分为**折算值**：已实测的模型用网关 `usage.credit` 台账单价，未实测的模型按网关模型目录的积分倍率折算（以实测单价为基线），界面统一带 `≈` 标记。
 
 ## 界面落点
 
 - **侧边栏底部（账户行上方）**：账号积分区块。每行统一为「状态点 · 账号名 · 来源徽标（WB/Qoder） · 余额」，
   签到状态只由最左侧状态点表达（绿色 = 今日已签到）；限流 / 降权 / 连败以徽标透出恢复时间。侧边栏收起时不占位。
-- **输入框下方**：当前对话累计消耗（`Free Egg · 本会话 ≈N 积分`）。
+- **输入框下方**：当前对话累计消耗（`Free Egg · 本会话 ≈N 积分`）。只要当前对话用的是 free-egg provider
+  （默认 `free-egg` / `workbuddy` / `qoder` / `new-api`）的模型，这条就常显——首轮回复前是 `≈0`，
+  模型暂时没有单价时提示「等待单价」；换到其他 provider（如 DeepSeek 官方账号）的模型则不显示，避免误导。
 - **每条对话末尾**：该轮折算消耗（`本轮 ≈N 积分`，悬停可看 token 与模型）。
 - **设置 → Free Egg 积分**：账号卡（名称 / 来源徽标 / 余额 / 签到状态 / 已用占比 / 立即签到）、
   限流与降权明细、折算单价、最近对话与逐轮明细。
@@ -86,6 +88,8 @@ New-Item -ItemType Junction `
     checkinRetryMinutes: 10
     refreshSeconds: 30
     creditsPer1k: {}
+    freeEggProviders: [free-egg, workbuddy, qoder, new-api]
+    catalogBaseCreditsPer1k: 0
     qoder:
       baseUrl: 'http://127.0.0.1:8790'
       panelPasswordFile: 'C:/path/to/qoder2api/.panel-password'
@@ -104,7 +108,9 @@ New-Item -ItemType Junction `
 | `checkinAfterHour` | `8` | 几点后才自动探测（避免凌晨误触发） |
 | `checkinRetryMinutes` | `10` | 失败重试间隔 |
 | `refreshSeconds` | `30` | 网关快照缓存 |
-| `creditsPer1k` | `{}` | 单价覆盖（模型名 → 积分/千 token） |
+| `creditsPer1k` | `{}` | 单价覆盖（模型名 → 积分/千 token），优先级最高 |
+| `freeEggProviders` | `['free-egg','workbuddy','qoder','new-api']` | 哪些 DSH provider 视为「free-egg 模型」：这些 provider 的对话底栏常显积分预估，且只有它们计积分 |
+| `catalogBaseCreditsPer1k` | `0` | 目录倍率折算的兜底基线（积分/千 token/倍率单位）；`0` = 只用网关实测台账自动校准 |
 | `qoder` | 无 | Qoder 网关子配置：`baseUrl`、`panelPasswordFile`（面板密码文件）、`panelPassword`（内联兜底）、`enabled`。不配置则不启用 Qoder 来源 |
 
 ## 数据来源
@@ -116,7 +122,9 @@ New-Item -ItemType Junction `
 | Qoder 账号积分 | Qoder 网关 `GET /credits/summary`（registered 口径：`credits_remain` / `credits_size`） |
 | Qoder 签到状态 | Qoder 网关 `GET /scheduler`：调度器当天跑过巡检即视为「今日已签到」，`next_run_time` 为下次巡检 |
 | 每轮 token | DSH Session 事件里的 `assistant/message.usage`（Host 侧折叠，不落盘） |
-| 积分单价 | 网关账号状态里的 `model_costs[].cost_per_1k`（按样本数加权），可在配置里覆盖 |
+| 积分单价（已实测） | 网关账号状态里的 `model_costs[].cost_per_1k`（按样本数加权），可在配置里覆盖 |
+| 积分单价（未实测） | 模型目录倍率：WorkBuddy `GET /v1/models` 的 `credits`（如 `x0.11`）、Qoder `GET /models` 的 `price_factor`；倍率为 `0` 视为免费模型（0 积分） |
+| 模型来源 | DSH Session 事件里 `assistant/message.message.source.provider` / `model`，以及 `model/selection`、`request/header` 事件的当前 provider / model（据此判断算不算 free-egg 模型） |
 | 限流状态 | 网关账号状态里的 `rate_limited_models[]`（6004 模型级限流台账：model / until / reset_at）与 `degrade_until`（连败降权截止），到期自动消失。**重置时间**取上游 `reset_at`（真正恢复可用的时刻，缺省回落 `until`），侧边栏徽标标成「限流 HH:mm（多模型取最晚）」；设置页把 `until` 单列为「本地冷却到」 |
 
 ## 工作原理
@@ -125,8 +133,9 @@ New-Item -ItemType Junction `
 
 - **Host 半（`index.js`）**：`inject: ['webServer']`，在 DSH Web 同源路由 `/__dsh-wb-credits`
   下注册 5 个接口（`GET /snapshot`、`GET /sessions`、`POST /refresh`、`POST /checkin`、
-  `POST /qoder/checkin`）。负责：读网关面板、判定签到、用 `session/event` 与会话日志折叠每轮
-  token 用量、按实测单价折算积分。密钥、面板密码、token 全部只在这个进程内使用。
+  `POST /qoder/checkin`）。负责：读网关面板与模型目录、判定签到、用 `session/event` 与会话日志折叠每轮
+  token 用量、按 provider 判断是否 free-egg 模型、按「实测单价 → 目录倍率折算 → 配置覆盖」折算积分。
+  密钥、面板密码、token 全部只在这个进程内使用。
 - **Client 半（`client.js`）**：手写 `window.__ModuleLoader__` bundle，向 `sidebar.footer.action`、
   `conversation.composer.dock`、`conversation.chat.turnTail`、`settings.section` 四个席位注入 React 组件，
   只从上面的同源路由取数据。界面沿用宿主 CSS 变量（`--dsw-alias-*`），不引入独立样式体系。
@@ -147,7 +156,8 @@ New-Item -ItemType Junction `
 ## 已知限制
 
 - 积分为折算值：上游限免时段实际扣费可能更低，所以界面统一带 `≈`。
-- 非 WorkBuddy 模型（例如 stepfun）的历史对话只显示 token，积分为 `—`。
+- 只有 free-egg provider（默认 `free-egg` / `workbuddy` / `qoder` / `new-api`）的对话计积分；其他 provider（如 DeepSeek 官方账号）只显示 token、积分为 `—`，底栏也不显示。
+- 未实测模型的单价是**倍率折算的估算值**：基线取自本机已实测模型，换模型 / 上游调价后可能有偏差；配置 `creditsPer1k` 可精确覆盖。
 - 签到状态依赖一次幂等的签到调用；关闭 `autoCheckin` 后状态可能为「未知」。
 - Qoder 积分为上游 registered 口径（`credits_remain` / `credits_size`），签到或消费后由网关写回；
   快照缓存 60 秒，设置页点刷新可强制重拉。
@@ -167,7 +177,7 @@ npm run check   # node --check index.js && node --check client.js
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 Yhx888
+[MIT](LICENSE) © 2026 dsh-free-egg-credits contributors
 
 ## 免责声明
 

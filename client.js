@@ -25,10 +25,11 @@ window.__ModuleLoader__.load({
       'section.title': 'Free Egg 积分',
       'section.desc': 'DeepSeek / Qwen 各上游账号的可用积分、每日签到状态，以及每条对话消耗的积分。',
       'sidebar.title': 'Free Egg 积分',
-      'dock.label': 'Free tier',
+      'dock.label': 'Free Egg',
       'dock.loading': 'WorkBuddy 积分读取中…',
       'dock.error': 'WorkBuddy 网关未连接',
       'dock.session': '本会话 ≈{credits} 积分',
+      'dock.pending': '本会话 · 等待单价',
       'dock.checkin': '签到 {checked}/{total}',
       'dock.refresh': '刷新',
       'checkin.checked': '今日已签到',
@@ -44,8 +45,13 @@ window.__ModuleLoader__.load({
       'settings.accounts': '账号',
       'settings.price': '折算单价',
       'settings.priceGateway': '按网关实测扣费台账加权 · {count} 个模型',
+      'settings.priceMixed': '网关实测 + 按模型倍率折算 · {count} 个模型',
+      'settings.priceCatalog': '按模型倍率折算（以实测单价为基线） · {count} 个模型',
       'settings.priceConfig': '在插件配置里覆盖',
       'settings.priceNone': '暂无实测单价，暂时只显示 token',
+      'settings.estimated': '估算',
+      'settings.priceEstimatedCount': '{count} 个模型按倍率估算',
+      'settings.priceFreeCount': '{count} 个模型免费',
       'settings.recent': '最近对话',
       'settings.current': '当前对话逐轮明细',
       'settings.turn': '轮次',
@@ -59,7 +65,7 @@ window.__ModuleLoader__.load({
       'settings.checking': '签到中…',
       'settings.total': '总额度 {total}',
       'settings.lastSuccess': '最近成功 {time}',
-      'settings.hint': '积分按网关实测扣费单价折算，上游限免时段实际扣费可能更低；签到状态来自一次幂等的签到调用。',
+      'settings.hint': '积分按「网关实测单价」或「模型倍率折算」估算，上游限免时段实际扣费可能更低；签到状态来自一次幂等的签到调用。',
       'settings.noticeFailed': '操作失败：{message}',
       'limit.flag': '限流',
       'limit.degrade': '降权',
@@ -92,6 +98,7 @@ window.__ModuleLoader__.load({
       'dock.loading': 'Reading WorkBuddy credits…',
       'dock.error': 'WorkBuddy gateway unreachable',
       'dock.session': 'This chat ≈{credits} credits',
+      'dock.pending': 'This chat · rate pending',
       'dock.checkin': 'Check-in {checked}/{total}',
       'dock.refresh': 'Refresh',
       'checkin.checked': 'Checked in today',
@@ -107,8 +114,13 @@ window.__ModuleLoader__.load({
       'settings.accounts': 'Accounts',
       'settings.price': 'Credit rate',
       'settings.priceGateway': 'Weighted from the gateway charge ledger · {count} models',
+      'settings.priceMixed': 'Measured + estimated from model multipliers · {count} models',
+      'settings.priceCatalog': 'Estimated from model multipliers (calibrated by measured rates) · {count} models',
       'settings.priceConfig': 'Overridden in plugin config',
       'settings.priceNone': 'No measured rate yet — only tokens are shown',
+      'settings.estimated': 'est.',
+      'settings.priceEstimatedCount': '{count} models estimated from multipliers',
+      'settings.priceFreeCount': '{count} free models',
       'settings.recent': 'Recent chats',
       'settings.current': 'Credits per turn in this chat',
       'settings.turn': 'Turn',
@@ -122,7 +134,7 @@ window.__ModuleLoader__.load({
       'settings.checking': 'Checking in…',
       'settings.total': 'Total quota {total}',
       'settings.lastSuccess': 'Last success {time}',
-      'settings.hint': 'Credits are estimated from the gateway’s measured charge rate; actual charges during upstream free periods can be lower. Check-in state comes from one idempotent check-in call.',
+      'settings.hint': 'Credits are estimated from measured gateway charge rates or model multipliers; actual charges during upstream free periods can be lower. Check-in state comes from one idempotent check-in call.',
       'settings.noticeFailed': 'Operation failed: {message}',
       'limit.flag': 'Limited',
       'limit.degrade': 'Degraded',
@@ -826,21 +838,33 @@ window.__ModuleLoader__.load({
         session.pricedTurns !== undefined
           ? Number(session.pricedTurns)
           : rows.filter(row => row && row.credits !== null && row.credits !== undefined).length
-      if (rows.length === 0 || pricedTurns <= 0 || !Number.isFinite(totalCredits)) return null
+      const freeEgg = session.freeEgg === true
+      // 显示条件：
+      //   1. 当前对话用的是 free-egg provider 的模型 → 一直显示（首轮前 ≈0，缺单价时提示等待）；
+      //   2. 否则维持旧行为：只有这条对话真的算出过积分才显示，避免用官方模型时误导。
+      if (!freeEgg && (rows.length === 0 || pricedTurns <= 0 || !Number.isFinite(totalCredits))) return null
+      if (freeEgg && !Number.isFinite(totalCredits)) return null
+
+      const pending = freeEgg && rows.length > 0 && pricedTurns <= 0
+      const model = trimModel(session.currentModel || '')
+      const title = [
+        rows.length + ' 轮',
+        formatTokens(session.totalTokens) + ' tokens',
+        model,
+        session.currentProvider || '',
+      ]
+        .filter(Boolean)
+        .join(' · ')
+      const text = pending
+        ? translateWith(props.t, 'dock.pending', '本会话 · 等待单价')
+        : translateWith(props.t, 'dock.session', '本会话 ≈{credits} 积分', { credits: formatCredits(totalCredits) })
 
       return h(
         'div',
         { className: 'wbcd-dock' },
         h(StyleTag),
-        h('span', { className: 'wbcd-label', title: gateway.baseUrl || '' }, translateWith(props.t, 'dock.label', 'WorkBuddy')),
-        h(
-          'span',
-          {
-            className: 'wbcd-session',
-            title: session.turns.length + ' 轮 · ' + formatTokens(session.totalTokens) + ' tokens',
-          },
-          translateWith(props.t, 'dock.session', '本会话 ≈{credits} 积分', { credits: formatCredits(totalCredits) }),
-        ),
+        h('span', { className: 'wbcd-label', title: gateway.baseUrl || '' }, translateWith(props.t, 'dock.label', 'Free Egg')),
+        h('span', { className: 'wbcd-session', title }, text),
         gateway.online === false
           ? h('span', { className: 'wbcd-offline', title: gateway.error || '' }, '离线')
           : null,
@@ -951,12 +975,36 @@ window.__ModuleLoader__.load({
         if (!gateway) return null
         const detail = Array.isArray(gateway.priceDetail) ? gateway.priceDetail : []
         if (detail.length === 0) return tr('settings.priceNone', '暂无实测单价，暂时只显示 token')
-        const parts = detail.map(row => trimModel(row.model) + ' ' + formatRate(row.costPer1k) + ' 积分/千 token')
+        const marker = '（' + tr('settings.estimated', '估算') + '）'
+        // 只展开「当前对话用到的模型」；目录估价模型很多，其余用计数汇总。
+        const used = new Set()
+        for (const row of (session && session.turns) || []) {
+          for (const model of row.models || []) used.add(trimModel(model).toLowerCase())
+        }
+        if (session && session.currentModel) used.add(trimModel(session.currentModel).toLowerCase())
+        const measuredRows = detail.filter(row => row.source === 'gateway' || row.source === 'config')
+        const usedRows = detail.filter(row => used.has(trimModel(row.model).toLowerCase()))
+        const shown = (usedRows.length > 0 ? usedRows : measuredRows).slice(0, 6)
+        const parts = shown.map(row =>
+          trimModel(row.model) + ' ' + formatRate(row.costPer1k) + ' 积分/千 token' + (row.estimated === true ? marker : ''),
+        )
+        const estimatedCount = detail.filter(row => row.estimated === true).length
+        const freeCount = detail.filter(row => row.estimated !== true && Number(row.costPer1k) === 0).length
+        const extras = []
+        if (estimatedCount > 0) {
+          extras.push(tr('settings.priceEstimatedCount', '{count} 个模型按倍率估算', { count: estimatedCount }))
+        }
+        if (freeCount > 0) extras.push(tr('settings.priceFreeCount', '{count} 个模型免费', { count: freeCount }))
+        const count = detail.length
         const basis =
           gateway.priceBasis === 'config'
             ? tr('settings.priceConfig', '在插件配置里覆盖')
-            : tr('settings.priceGateway', '按网关实测扣费台账加权 · {count} 个模型', { count: detail.length })
-        return parts.join('，') + '（' + basis + '）'
+            : gateway.priceBasis === 'catalog'
+              ? tr('settings.priceCatalog', '按模型倍率折算（以实测单价为基线） · {count} 个模型', { count })
+              : gateway.priceBasis === 'gateway+catalog'
+                ? tr('settings.priceMixed', '网关实测 + 按模型倍率折算 · {count} 个模型', { count })
+                : tr('settings.priceGateway', '按网关实测扣费台账加权 · {count} 个模型', { count })
+        return parts.join('，') + (extras.length > 0 ? '；' + extras.join('，') : '') + '（' + basis + '）'
       })()
 
       // 统一账号卡：WorkBuddy / Qoder 同结构，差异只在徽标文案与签到路由。
@@ -1200,7 +1248,7 @@ window.__ModuleLoader__.load({
               )
             : h('div', { className: 'wbcd-empty' }, tr('settings.empty', '暂无数据')),
         ),
-        h('div', { className: 'wbcd-hint' }, tr('settings.hint', '积分按网关实测扣费单价折算，上游限免时段实际扣费可能更低；签到状态来自一次幂等的签到调用。')),
+        h('div', { className: 'wbcd-hint' }, tr('settings.hint', '积分按「网关实测单价」或「模型倍率折算」估算，上游限免时段实际扣费可能更低；签到状态来自一次幂等的签到调用。')),
       )
     })
 

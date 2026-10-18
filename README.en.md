@@ -1,5 +1,3 @@
-<p align="center"><img src="icon.svg" width="72" height="72" alt="Free Egg Credits icon"></p>
-
 # Free Egg Credits
 
 [中文](README.md) | [English](README.en.md)
@@ -13,8 +11,9 @@ A plugin for the DSH (DeepSeek Harness) web UI that surfaces the
 (WorkBuddy / Qoder), and the **credits each conversation** is estimated to have consumed — in the
 sidebar, under the composer, at the end of every turn, and in a settings section.
 
-> Credits are **estimates**: the per-model rate comes from the gateway's measured `usage.credit`
-> ledger, so the UI always prefixes values with `≈`.
+> Credits are **estimates**: measured models use the gateway's `usage.credit` ledger; models without
+> measurements are estimated from the gateway model catalog's credit multipliers (calibrated
+> against the measured rates). The UI always prefixes values with `≈`.
 
 ## Where it shows up
 
@@ -22,7 +21,11 @@ sidebar, under the composer, at the end of every turn, and in a settings section
   "status dot · account name · source badge (WB/Qoder) · balance". Check-in state is expressed only
   by the leftmost dot (green = checked in today); rate-limit / degrade / failure streaks appear as
   badges with a recovery time. Hidden while the sidebar is collapsed.
-- **Below the composer**: total estimated credits for the current conversation.
+- **Below the composer**: total estimated credits for the current conversation. As long as the
+  conversation uses a model from a free-egg provider (by default `free-egg` / `workbuddy` / `qoder` /
+  `new-api`), this strip stays visible — `≈0` before the first reply, and a “rate pending” hint when
+  the model has no rate yet. It stays hidden for other providers (e.g. the official DeepSeek
+  account) so the numbers are not misleading.
 - **End of each turn**: estimated credits for that turn (`This turn ≈N credits`; hover for tokens
   and models).
 - **Settings → Free Tier Credits**: account cards (name / source / balance / check-in / usage /
@@ -95,6 +98,8 @@ Put this in the target profile's `cordis.patch.yml` (plugin id `free-egg-credits
     checkinRetryMinutes: 10
     refreshSeconds: 30
     creditsPer1k: {}
+    freeEggProviders: [free-egg, workbuddy, qoder, new-api]
+    catalogBaseCreditsPer1k: 0
     qoder:
       baseUrl: 'http://127.0.0.1:8790'
       panelPasswordFile: 'C:/path/to/qoder2api/.panel-password'
@@ -114,7 +119,9 @@ Put this in the target profile's `cordis.patch.yml` (plugin id `free-egg-credits
 | `checkinAfterHour` | `8` | Do not probe before this hour |
 | `checkinRetryMinutes` | `10` | Retry interval after a failure |
 | `refreshSeconds` | `30` | Gateway snapshot cache |
-| `creditsPer1k` | `{}` | Rate overrides (model name → credits per 1k tokens) |
+| `creditsPer1k` | `{}` | Rate overrides (model name → credits per 1k tokens); highest precedence |
+| `freeEggProviders` | `['free-egg','workbuddy','qoder','new-api']` | DSH providers treated as free-egg: their conversations keep the credits strip visible, and only their turns are priced |
+| `catalogBaseCreditsPer1k` | `0` | Fallback calibration base for catalog-multiplier estimates (credits per 1k tokens per multiplier unit); `0` = auto-calibrate from measured gateway rates only |
 | `qoder` | none | Qoder gateway config: `baseUrl`, `panelPasswordFile`, `panelPassword` (inline fallback), `enabled`. Omit to disable the Qoder source |
 
 ## Data sources
@@ -126,7 +133,9 @@ Put this in the target profile's `cordis.patch.yml` (plugin id `free-egg-credits
 | Qoder credits | Qoder gateway `GET /credits/summary` (registered view: `credits_remain` / `credits_size`) |
 | Qoder check-in | Qoder gateway `GET /scheduler`: if the scheduler ran a check-in pass today, it counts as checked in; `next_run_time` is the next pass |
 | Tokens per turn | `assistant/message.usage` in DSH session events (folded on the host, never persisted) |
-| Credit rate | `model_costs[].cost_per_1k` from gateway account state, weighted by sample count; overridable via config |
+| Credit rate (measured) | `model_costs[].cost_per_1k` from gateway account state, weighted by sample count; overridable via config |
+| Credit rate (estimated) | Model catalog multipliers: WorkBuddy `GET /v1/models` `credits` (e.g. `x0.11`), Qoder `GET /models` `price_factor`; a multiplier of `0` means a free model (0 credits) |
+| Model source | `assistant/message.message.source.provider` / `model` in DSH session events, plus the current provider / model from `model/selection` and `request/header` events (used to decide whether a conversation counts as free-egg) |
 | Rate limits | `rate_limited_models[]` (model / until / reset_at) and `degrade_until` from gateway account state; expired entries disappear automatically. The **reset time** uses upstream `reset_at` (when the model truly becomes available again, falling back to `until`), shown as `Limited HH:mm` in the sidebar (latest across models); the settings page lists `until` separately as "local cooldown until" |
 
 ## How it works
@@ -135,9 +144,11 @@ The plugin has a host half and a client half:
 
 - **Host half (`index.js`)**: `inject: ['webServer']`; registers five endpoints under the
   same-origin `/__dsh-wb-credits` prefix (`GET /snapshot`, `GET /sessions`, `POST /refresh`,
-  `POST /checkin`, `POST /qoder/checkin`). It reads gateway panels, decides check-in state, folds
-  per-turn token usage from `session/event` plus the session log, and converts tokens to credits
-  with the measured rate. Keys, password and panel token only ever exist in this process.
+  `POST /checkin`, `POST /qoder/checkin`). It reads gateway panels and model catalogs, decides
+  check-in state, folds per-turn token usage from `session/event` plus the session log, tracks which
+  provider each turn came from, and converts tokens to credits through three layers (measured rate →
+  catalog-multiplier estimate → config override). Keys, password and panel token only ever exist in
+  this process.
 - **Client half (`client.js`)**: a hand-written `window.__ModuleLoader__` bundle that injects React
   components into `sidebar.footer.action`, `conversation.composer.dock`,
   `conversation.chat.turnTail` and `settings.section`. It only reads the same-origin endpoints
@@ -164,7 +175,12 @@ Please report security issues privately as described in [SECURITY.md](SECURITY.m
 ## Known limitations
 
 - Credits are estimates: actual charges during upstream free periods can be lower, hence the `≈`.
-- Conversations that used non-WorkBuddy models (e.g. stepfun) only show tokens; credits show `—`.
+- Only conversations from free-egg providers (by default `free-egg` / `workbuddy` / `qoder` /
+  `new-api`) are priced; other providers (e.g. the official DeepSeek account) only show tokens and
+  `—` for credits, and the composer strip stays hidden.
+- Rates for models without measurements are **estimated from catalog multipliers**: the baseline is
+  calibrated from models measured on this machine, so switching models or upstream price changes can
+  introduce drift. Use `creditsPer1k` for exact overrides.
 - Check-in state depends on one idempotent check-in call; with `autoCheckin` disabled it can be
   "unknown".
 - Qoder credits use the upstream registered view (`credits_remain` / `credits_size`) and are
@@ -188,7 +204,7 @@ history.
 
 ## License
 
-[MIT](LICENSE) © 2026 Yhx888
+[MIT](LICENSE) © 2026 dsh-free-egg-credits contributors
 
 ## Disclaimer
 
