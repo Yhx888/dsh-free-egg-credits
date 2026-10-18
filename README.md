@@ -6,7 +6,7 @@
 [![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-3c873a.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DSH-plugin-4b8bf5.svg)](https://github.com/topics/dsh-plugin)
 
-一个 [DSH（DeepSeek Harness）](https://github.com/deepseek-ai) Web 界面插件：把本地反代网关
+一个 DSH（DeepSeek Harness）Web 界面插件：把本地反代网关
 （WorkBuddy / Qoder）里各账号的**可用积分**、**每日签到状态**，以及**每条对话折算消耗的积分**
 直接显示在界面里——侧边栏、输入框下方、每轮对话末尾和设置页各有一个落点。
 
@@ -63,8 +63,8 @@ New-Item -ItemType Junction `
 
 | 依赖 | 用途 | 相关配置 |
 |---|---|---|
-| WorkBuddy2API 网关（`workbuddy2api`） | WorkBuddy / CodeBuddy 账号积分与签到 | `gatewayBaseUrl`、`gatewayConfigPath` |
-| Qoder 反代网关（`qoder2api-hub`） | Qoder 账号积分与签到调度 | `qoder.baseUrl`、`qoder.panelPasswordFile` |
+| [WorkBuddy2API 网关](https://github.com/linguo2625469/workbuddy2api-panel)（`workbuddy2api`） | WorkBuddy / CodeBuddy 账号积分与签到 | `gatewayBaseUrl`、`gatewayConfigPath` |
+| [Qoder 反代网关](https://github.com/shuishuipingan/qoder2api-hub)（`qoder2api-hub`） | Qoder 账号积分与签到调度 | `qoder.baseUrl`、`qoder.panelPasswordFile` |
 
 两个网关都**不是**本插件的组成部分；插件只读它们的 HTTP 接口。
 网关密钥与面板密码只在 Host 侧读取、不下发浏览器。

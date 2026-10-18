@@ -6,7 +6,7 @@
 [![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-3c873a.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DSH-plugin-4b8bf5.svg)](https://github.com/topics/dsh-plugin)
 
-A plugin for the [DSH (DeepSeek Harness)](https://github.com/deepseek-ai) web UI that surfaces the
+A plugin for the DSH (DeepSeek Harness) web UI that surfaces the
 **available credits**, **daily check-in state** of accounts on your local reverse-proxy gateways
 (WorkBuddy / Qoder), and the **credits each conversation** is estimated to have consumed — in the
 sidebar, under the composer, at the end of every turn, and in a settings section.
@@ -72,8 +72,8 @@ refresh.
 
 | Dependency | Purpose | Config |
 |---|---|---|
-| WorkBuddy2API gateway (`workbuddy2api`) | WorkBuddy / CodeBuddy account credits and check-in | `gatewayBaseUrl`, `gatewayConfigPath` |
-| Qoder gateway (`qoder2api-hub`) | Qoder account credits and check-in scheduler | `qoder.baseUrl`, `qoder.panelPasswordFile` |
+| [WorkBuddy2API gateway](https://github.com/linguo2625469/workbuddy2api-panel) (`workbuddy2api`) | WorkBuddy / CodeBuddy account credits and check-in | `gatewayBaseUrl`, `gatewayConfigPath` |
+| [Qoder gateway](https://github.com/shuishuipingan/qoder2api-hub) (`qoder2api-hub`) | Qoder account credits and check-in scheduler | `qoder.baseUrl`, `qoder.panelPasswordFile` |
 
 Neither gateway is part of this repository; the plugin only reads their HTTP APIs. Gateway keys and
 the panel password are read on the host side and are never sent to the browser.
