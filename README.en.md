@@ -11,9 +11,9 @@ A plugin for the DSH (DeepSeek Harness) web UI that surfaces the
 (WorkBuddy / Qoder), and the **credits each conversation** is estimated to have consumed — in the
 sidebar, under the composer, at the end of every turn, and in a settings section.
 
-> Credits are **estimates**: measured models use the gateway's `usage.credit` ledger; models without
-> measurements are estimated from the gateway model catalog's credit multipliers (calibrated
-> against the measured rates). The UI always prefixes values with `≈`.
+> Credits are **estimates**: WorkBuddy uses its account `model_costs` ledger and Qoder uses the panel
+> `/usage` ledger (real `credit ÷ total_tokens`) as measured rates; models without measurements are
+> estimated from each gateway's model catalog multipliers. The UI always prefixes values with `≈`.
 
 ## Where it shows up
 
@@ -133,8 +133,10 @@ Put this in the target profile's `cordis.patch.yml` (plugin id `free-egg-credits
 | Qoder credits | Qoder gateway `GET /credits/summary` (registered view: `credits_remain` / `credits_size`) |
 | Qoder check-in | Qoder gateway `GET /scheduler`: if the scheduler ran a check-in pass today, it counts as checked in; `next_run_time` is the next pass |
 | Tokens per turn | `assistant/message.usage` in DSH session events (folded on the host, never persisted) |
-| Credit rate (measured) | `model_costs[].cost_per_1k` from gateway account state, weighted by sample count; overridable via config |
-| Credit rate (estimated) | Model catalog multipliers: WorkBuddy `GET /v1/models` `credits` (e.g. `x0.11`), Qoder `GET /models` `price_factor`; a multiplier of `0` means a free model (0 credits) |
+| Credit rate (WorkBuddy measured) | `model_costs[].cost_per_1k` from gateway account state, weighted by sample count |
+| Credit rate (Qoder measured) | Qoder panel `GET /usage` `by_model` ledger: real `credit ÷ total_tokens` (includes cache-hit discounts); cached for 5 minutes |
+| Credit rate (estimated) | Model catalog multipliers: WorkBuddy `GET /v1/models` `credits` (e.g. `x0.11`), Qoder `GET /models` `price_factor`; each gateway is calibrated against its own measured rates; a multiplier of `0` means a free model (0 credits) |
+| free-egg aggregation aliases | When e.g. `deepseek-v4.1-flash` is actually served by Qoder `DeepSeek-Flash`, a version-insensitive normalized match against measured rates is used; override with `creditsPer1k` when ambiguous |
 | Model source | `assistant/message.message.source.provider` / `model` in DSH session events, plus the current provider / model from `model/selection` and `request/header` events (used to decide whether a conversation counts as free-egg) |
 | Rate limits | `rate_limited_models[]` (model / until / reset_at) and `degrade_until` from gateway account state; expired entries disappear automatically. The **reset time** uses upstream `reset_at` (when the model truly becomes available again, falling back to `until`), shown as `Limited HH:mm` in the sidebar (latest across models); the settings page lists `until` separately as "local cooldown until" |
 
@@ -178,9 +180,13 @@ Please report security issues privately as described in [SECURITY.md](SECURITY.m
 - Only conversations from free-egg providers (by default `free-egg` / `workbuddy` / `qoder` /
   `new-api`) are priced; other providers (e.g. the official DeepSeek account) only show tokens and
   `—` for credits, and the composer strip stays hidden.
-- Rates for models without measurements are **estimated from catalog multipliers**: the baseline is
-  calibrated from models measured on this machine, so switching models or upstream price changes can
-  introduce drift. Use `creditsPer1k` for exact overrides.
+- Rates for models without measurements are **estimated from catalog multipliers**: each gateway's
+  baseline is calibrated from models measured on this machine, so switching models or upstream price
+  changes can introduce drift. Use `creditsPer1k` for exact overrides.
+- Qoder measured rates include cache-hit discounts (observed as high as 98% cached input), so they
+  are a recent average for that model and drift when the cache mix changes.
+- free-egg aggregation aliases are matched by stripping version numbers (DeepSeek-Flash /
+  deepseek-v4.1-flash); if a match is ambiguous, set `creditsPer1k` explicitly.
 - Check-in state depends on one idempotent check-in call; with `autoCheckin` disabled it can be
   "unknown".
 - Qoder credits use the upstream registered view (`credits_remain` / `credits_size`) and are

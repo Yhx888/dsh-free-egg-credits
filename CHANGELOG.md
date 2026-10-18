@@ -3,6 +3,25 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.1] - 2026-10-18
+
+### 修复
+
+- **积分预估高估 3 倍**：原实现用 WorkBuddy 的 `model_costs` 反推「每倍率多少积分」，
+  再乘目录倍率高估算；但 Qoder 侧单价受缓存命中影响很大（本会话 57M token 里 98% 是缓存
+  命中），且两台网关的倍率基线并不相同。现改为：
+  - 读取 Qoder 面板 `GET /usage` 的 `by_model` 实测台账（真实 `credit ÷ total_tokens`），
+    作为 Qoder 模型的实测单价；
+  - WorkBuddy / Qoder 各自用本网关实测数据校准倍率基线，不再跨网关混用；
+  - free-egg 聚合别名（如 `deepseek-v4.1-flash` 实际由 Qoder `DeepSeek-Flash` 承载）按
+    「去版本号归一 + 实测」兜底匹配；免费模型（倍率 0）恒为 0，不参与实测匹配。
+- 同一会话实测从 ≈385 修正为 ≈117 积分（Qoder `/usage` 台账真实值 117.86），误差 <1%。
+
+### 说明
+
+- 实测单价包含缓存命中的折扣，属于「该模型近期实际平均」，会随用法变化；需要精确值仍可用
+  `creditsPer1k` 覆盖。
+
 ## [1.1.0] - 2026-10-18
 
 ### 新增
@@ -41,5 +60,6 @@
 - 积分是**折算值**：单价取自网关对上游 `usage.credit` 的实测台账，界面统一带 `≈`。
 - 两个网关都是外部依赖，不在本仓库内；未配置时对应来源不显示。
 
+[1.1.1]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.1.1
 [1.1.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.0.0

@@ -12,7 +12,7 @@
 （WorkBuddy / Qoder）里各账号的**可用积分**、**每日签到状态**，以及**每条对话折算消耗的积分**
 直接显示在界面里——侧边栏、输入框下方、每轮对话末尾和设置页各有一个落点。
 
-> 积分为**折算值**：已实测的模型用网关 `usage.credit` 台账单价，未实测的模型按网关模型目录的积分倍率折算（以实测单价为基线），界面统一带 `≈` 标记。
+> 积分为**折算值**：WorkBuddy 用账号 `model_costs` 台账、Qoder 用面板 `/usage` 台账（真实 `credit ÷ total_tokens`）作为实测单价；未实测的模型按各网关的模型目录倍率折算，界面统一带 `≈` 标记。
 
 ## 界面落点
 
@@ -122,8 +122,10 @@ New-Item -ItemType Junction `
 | Qoder 账号积分 | Qoder 网关 `GET /credits/summary`（registered 口径：`credits_remain` / `credits_size`） |
 | Qoder 签到状态 | Qoder 网关 `GET /scheduler`：调度器当天跑过巡检即视为「今日已签到」，`next_run_time` 为下次巡检 |
 | 每轮 token | DSH Session 事件里的 `assistant/message.usage`（Host 侧折叠，不落盘） |
-| 积分单价（已实测） | 网关账号状态里的 `model_costs[].cost_per_1k`（按样本数加权），可在配置里覆盖 |
-| 积分单价（未实测） | 模型目录倍率：WorkBuddy `GET /v1/models` 的 `credits`（如 `x0.11`）、Qoder `GET /models` 的 `price_factor`；倍率为 `0` 视为免费模型（0 积分） |
+| 积分单价（WorkBuddy 实测） | 网关账号状态里的 `model_costs[].cost_per_1k`（按样本数加权） |
+| 积分单价（Qoder 实测） | Qoder 面板 `GET /usage` 的 `by_model` 台账：真实 `credit ÷ total_tokens`（含缓存命中折扣），5 分钟缓存 |
+| 积分单价（未实测） | 模型目录倍率：WorkBuddy `GET /v1/models` 的 `credits`（如 `x0.11`）、Qoder `GET /models` 的 `price_factor`；两台网关各自用本网关实测数据校准基线；倍率为 `0` 视为免费模型（0 积分） |
+| free-egg 聚合别名 | 如 `deepseek-v4.1-flash` 实际由 Qoder `DeepSeek-Flash` 承载时，用「去版本号归一 + 实测单价」兜底匹配；歧义时可用 `creditsPer1k` 覆盖 |
 | 模型来源 | DSH Session 事件里 `assistant/message.message.source.provider` / `model`，以及 `model/selection`、`request/header` 事件的当前 provider / model（据此判断算不算 free-egg 模型） |
 | 限流状态 | 网关账号状态里的 `rate_limited_models[]`（6004 模型级限流台账：model / until / reset_at）与 `degrade_until`（连败降权截止），到期自动消失。**重置时间**取上游 `reset_at`（真正恢复可用的时刻，缺省回落 `until`），侧边栏徽标标成「限流 HH:mm（多模型取最晚）」；设置页把 `until` 单列为「本地冷却到」 |
 
@@ -157,7 +159,9 @@ New-Item -ItemType Junction `
 
 - 积分为折算值：上游限免时段实际扣费可能更低，所以界面统一带 `≈`。
 - 只有 free-egg provider（默认 `free-egg` / `workbuddy` / `qoder` / `new-api`）的对话计积分；其他 provider（如 DeepSeek 官方账号）只显示 token、积分为 `—`，底栏也不显示。
-- 未实测模型的单价是**倍率折算的估算值**：基线取自本机已实测模型，换模型 / 上游调价后可能有偏差；配置 `creditsPer1k` 可精确覆盖。
+- 未实测模型的单价是**倍率折算的估算值**：两台网关各自用本机实测数据校准，换模型 / 上游调价后可能有偏差；配置 `creditsPer1k` 可精确覆盖。
+- Qoder 实测单价包含缓存命中的折扣（本项目实测一度有 98% 输入命中缓存），是「该模型近期实际平均」；同一模型换用法（缓存比例变化）会带来偏差。
+- free-egg 聚合别名的自动匹配按「去版本号归一」进行，跨网关同名家族（如 DeepSeek-Flash / deepseek-v4.1-flash）能对上；若有歧义，用 `creditsPer1k` 显式指定。
 - 签到状态依赖一次幂等的签到调用；关闭 `autoCheckin` 后状态可能为「未知」。
 - Qoder 积分为上游 registered 口径（`credits_remain` / `credits_size`），签到或消费后由网关写回；
   快照缓存 60 秒，设置页点刷新可强制重拉。

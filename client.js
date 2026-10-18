@@ -982,7 +982,7 @@ window.__ModuleLoader__.load({
           for (const model of row.models || []) used.add(trimModel(model).toLowerCase())
         }
         if (session && session.currentModel) used.add(trimModel(session.currentModel).toLowerCase())
-        const measuredRows = detail.filter(row => row.source === 'gateway' || row.source === 'config')
+        const measuredRows = detail.filter(row => row.measured === true || row.source === 'config')
         const usedRows = detail.filter(row => used.has(trimModel(row.model).toLowerCase()))
         const shown = (usedRows.length > 0 ? usedRows : measuredRows).slice(0, 6)
         const parts = shown.map(row =>

@@ -457,6 +457,8 @@ function createQoderGateway(opts, log) {
       if (!response.ok) throw new Error(`Qoder /models → HTTP ${response.status}`)
       return JSON.parse(text)
     },
+    // 实测用量台账（按模型聚合 credit / total_tokens）：面板接口，需 panel token。
+    usage: () => request('/usage'),
     // 手动签到（设置页按钮用）；调度器每日 09/21 自动跑，这里只是手动补
     checkin: async () => request('/accounts/checkin', { method: 'POST', timeoutMs: 300000 }),
     accounts: () => request('/accounts'),
@@ -517,11 +519,13 @@ async function refreshQoder(state, gateway, opts, log) {
   const cached = state.qoder
   if (cached && cached.enabled && now - cached.updatedAt < 60_000) return
   if (cached && cached.fetching) return cached.fetching
-  // Qoder 目录用于识别免费模型（price_factor=0）与给 paid 模型估价，30 分钟一拉。
+  // Qoder 目录用于识别免费模型（price_factor=0）与给 paid 模型估价，30 分钟一拉；
+  // 实测用量台账 5 分钟一拉，是 Qoder 模型单价的最可靠来源。
   const needModels = !state.models.qoderAt || now - state.models.qoderAt > MODELS_TTL_MS
+  const needUsage = !state.usage.qoderAt || now - state.usage.qoderAt > USAGE_TTL_MS
   const work = (async () => {
     try {
-      const [summary, scheduler, catalog] = await Promise.all([
+      const [summary, scheduler, catalog, usage] = await Promise.all([
         qoder.credits(),
         qoder.scheduler().catch(() => null),
         needModels
@@ -530,15 +534,28 @@ async function refreshQoder(state, gateway, opts, log) {
               return null
             })
           : null,
+        needUsage
+          ? qoder.usage().catch(error => {
+              log('读取 Qoder 用量台账失败', error)
+              return null
+            })
+          : null,
       ])
       if (catalog) {
         state.models.qoder = parseQoderCatalog(catalog)
         state.models.qoderAt = Date.now()
-        buildPrice(state, opts)
       } else if (needModels) {
         // 失败后 5 分钟再试，避免每轮 Qoder 刷新都重复失败。
         state.models.qoderAt = now - MODELS_TTL_MS + 5 * 60_000
       }
+      if (usage) {
+        state.usage.qoder = parseQoderUsage(usage)
+        state.usage.qoderAt = Date.now()
+      } else if (needUsage) {
+        // 失败后 2 分钟再试。
+        state.usage.qoderAt = now - USAGE_TTL_MS + 2 * 60_000
+      }
+      if (catalog || usage) buildPrice(state, opts)
       const accounts = (Array.isArray(summary?.accounts) ? summary.accounts : []).map(row => ({
         uid: String(row.uid || ''),
         nickname: String(row.nickname || ''),
@@ -616,8 +633,14 @@ function createState() {
     qoder: null,
     // 网关模型目录（倍率 / price_factor），用于给未实测模型估价
     models: { workbuddy: [], qoder: [], workbuddyAt: 0, qoderAt: 0, fetching: null },
+    // Qoder 实测用量台账（按模型 credit / total_tokens）
+    usage: { qoder: [], qoderAt: 0 },
     // 目录倍率的实测校准基线（积分/千 token/倍率单位）
     catalogBase: 0,
+    catalogBaseQoder: 0,
+    // 单价索引：精确 key → 候选；归一 key → 实测候选（给聚合网关的别名兜底）
+    priceIndex: new Map(),
+    priceNormalized: new Map(),
     // 哪些 DSH provider 视为 free-egg 模型（不区分大小写）
     freeEggProviders: new Set(),
   }
@@ -657,6 +680,8 @@ async function refreshGateway(state, gateway, opts, log, force) {
 
 /** 网关模型目录的本地缓存时长：网关侧本身缓存 1 小时，这里没必要每轮快照都拉。 */
 const MODELS_TTL_MS = 30 * 60_000
+/** Qoder 实测用量台账的缓存时长（按模型聚合的 credit/total_tokens 变化很慢）。 */
+const USAGE_TTL_MS = 5 * 60_000
 
 /** 解析网关的积分倍率字符串："x0.11" / "x0.71 credits" / "0.06" → 数字。 */
 function parseCreditMultiplier(value) {
@@ -694,6 +719,24 @@ async function refreshWorkbuddyModels(state, gateway, opts, log) {
     }
   })()
   return state.models.fetching
+}
+
+/** Qoder /usage 的 by_model → [{ model, tokens, credit, requests }]。 */
+function parseQoderUsage(payload) {
+  const byModel = payload && typeof payload.by_model === 'object' ? payload.by_model : {}
+  const list = []
+  for (const [model, row] of Object.entries(byModel)) {
+    if (!model || !row || typeof row !== 'object') continue
+    const tokens = toNumber(row.total_tokens)
+    if (!(tokens > 0)) continue
+    list.push({
+      model,
+      tokens,
+      credit: toNumber(row.credit),
+      requests: toNumber(row.requests),
+    })
+  }
+  return list
 }
 
 /** Qoder /models → [{ id, aliases, factor }]；factor 为 0 即免费模型。 */
@@ -769,14 +812,89 @@ function applyOverview(state, overview, opts) {
  *      （WorkBuddy /v1/models 的 credits、Qoder /models 的 price_factor；0 = 免费模型）；
  *   3. 配置 creditsPer1k —— 永远最后覆盖。
  */
+/**
+ * 单价优先级：配置覆盖 > 免费(0) > 实测 > 目录倍率折算。
+ * 实测来源有两处：WorkBuddy 的 model_costs 与 Qoder 面板 /usage 的 by_model 台账。
+ */
+const PRICE_PRIORITY = { config: 5, free: 4, measured: 3, catalog: 1 }
+
+function pricePriority(entry) {
+  if (!entry) return 0
+  if (entry.source === 'config') return PRICE_PRIORITY.config
+  if (entry.free) return PRICE_PRIORITY.free
+  if (entry.measured) return PRICE_PRIORITY.measured
+  return PRICE_PRIORITY.catalog
+}
+
+/** 去掉版本号做归一："deepseek-v4.1-flash" 与 "DeepSeek-Flash" 都变成 "deepseek-flash"。 */
+function normalizeModelKey(model) {
+  return String(model || '')
+    .replace(/^(cn|global):/i, '')
+    .toLowerCase()
+    .replace(/v?\d+(?:\.\d+)*/g, ' ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-')
+}
+
+/**
+ * 查单价。优先级：配置 > 免费 > 精确实测 > 归一实测（仅 free-egg 聚合模型）> 目录估价。
+ * 归一实测是给聚合网关兜底的：free-egg 暴露的 deepseek-v4.1-flash 实际可能由
+ * Qoder 的 DeepSeek-Flash 承载，两者名字不同但同一模型。
+ */
+function resolvePrice(state, model, allowAlias) {
+  const key = String(model || '').trim().toLowerCase()
+  const exact = key && state.priceIndex instanceof Map ? state.priceIndex.get(key) : null
+  if (exact && pricePriority(exact) >= PRICE_PRIORITY.measured) {
+    return {
+      rate: exact.rate,
+      source: exact.source,
+      measured: exact.measured === true,
+      free: exact.free === true,
+    }
+  }
+  if (allowAlias) {
+    const normalized = normalizeModelKey(model)
+    const list = normalized && state.priceNormalized instanceof Map ? state.priceNormalized.get(normalized) : null
+    if (Array.isArray(list) && list.length > 0) {
+      let sum = 0
+      for (const entry of list) sum += entry.rate
+      return {
+        rate: sum / list.length,
+        source: list.length === 1 ? list[0].source : 'mixed-measured',
+        measured: true,
+        free: false,
+      }
+    }
+  }
+  if (exact) {
+    return {
+      rate: exact.rate,
+      source: exact.source,
+      measured: false,
+      free: exact.free === true,
+    }
+  }
+  return null
+}
+
 function buildPrice(state, opts) {
-  const models = new Map()
+  const entries = []
+  const pushEntry = entry => {
+    if (!entry || !entry.model) return
+    const rate = Number(entry.rate)
+    if (!Number.isFinite(rate) || rate < 0) return
+    entries.push(Object.assign({}, entry, { rate }))
+  }
+
+  // 1) WorkBuddy 实测台账：按 (账号, 模型) 实测扣费按样本数加权。
+  const wbMeasured = new Map()
   for (const account of state.accounts) {
     for (const row of account.modelCosts) {
       const model = stripRealm(row.model)
       if (!model || !Number.isFinite(row.costPer1k) || row.costPer1k < 0) continue
       const samples = Math.max(1, Math.floor(row.samples) || 1)
-      const current = models.get(model) || { weighted: 0, samples: 0, rows: [] }
+      const current = wbMeasured.get(model) || { weighted: 0, samples: 0, rows: [] }
       current.weighted += row.costPer1k * samples
       current.samples += samples
       current.rows.push({
@@ -785,23 +903,63 @@ function buildPrice(state, opts) {
         costPer1k: row.costPer1k,
         samples,
       })
-      models.set(model, current)
+      wbMeasured.set(model, current)
+    }
+  }
+  for (const [model, current] of wbMeasured) {
+    if (current.samples <= 0) continue
+    pushEntry({
+      model,
+      rate: current.weighted / current.samples,
+      source: 'gateway',
+      measured: true,
+      samples: current.samples,
+      accounts: current.rows,
+      canonical: true,
+    })
+  }
+
+  // 2) Qoder 实测台账：/usage 的 by_model（credit ÷ total_tokens）。
+  //    缓存命中的输入 token 计费远低于未命中，所以必须用「真实扣费 ÷ 真实 token」，
+  //    不能拿 token 总量乘目录倍率硬算（会高估数倍）。
+  const qoderMeasured = new Map()
+  for (const row of state.usage.qoder) {
+    const model = stripRealm(row.model)
+    const tokens = toNumber(row.tokens)
+    const credit = toNumber(row.credit)
+    if (!model || tokens < 5000 || !(credit > 0)) continue
+    qoderMeasured.set(model.toLowerCase(), {
+      model,
+      rate: (credit / tokens) * 1000,
+      tokens,
+      credit,
+    })
+  }
+  for (const item of qoderMeasured.values()) {
+    pushEntry({
+      model: item.model,
+      rate: item.rate,
+      source: 'qoder-usage',
+      measured: true,
+      tokens: item.tokens,
+      canonical: true,
+    })
+  }
+  for (const row of state.models.qoder) {
+    const id = stripRealm(row.id)
+    const item = qoderMeasured.get(id.toLowerCase())
+    if (!item) continue
+    for (const key of row.aliases) {
+      const alias = stripRealm(key)
+      if (!alias || alias.toLowerCase() === id.toLowerCase()) continue
+      pushEntry({ model: alias, rate: item.rate, source: 'qoder-usage', measured: true, canonical: false })
     }
   }
 
-  const price = {}
-  const detail = []
-  for (const [model, current] of models) {
-    if (current.samples <= 0) continue
-    const value = current.weighted / current.samples
-    price[model] = value
-    detail.push({ model, costPer1k: value, samples: current.samples, accounts: current.rows, source: 'gateway' })
-  }
-
-  // 目录条目：每个上游模型一组键（canonical + aliases，去掉 cn:/global: 前缀）。
+  // 3) 目录：每个上游模型一组键（canonical + aliases），倍率/price_factor 用来估价。
   const catalogEntries = []
-  const seenCanonical = new Set()
-  const addCatalogEntry = (keys, multiplier) => {
+  const seenCatalog = new Set()
+  const addCatalogEntry = (gateway, keys, factor) => {
     const stripped = []
     for (const key of keys) {
       const model = stripRealm(key)
@@ -809,88 +967,138 @@ function buildPrice(state, opts) {
     }
     if (stripped.length === 0) return
     const id = stripped[0].toLowerCase()
-    if (seenCanonical.has(id)) return
-    seenCanonical.add(id)
-    catalogEntries.push({ keys: stripped, multiplier })
+    if (seenCatalog.has(id)) return
+    seenCatalog.add(id)
+    catalogEntries.push({ gateway, keys: stripped, factor })
   }
   for (const row of state.models.workbuddy) {
     if (row.multiplier === null || row.multiplier === undefined) continue
-    addCatalogEntry([row.id], row.multiplier)
+    addCatalogEntry('workbuddy', [row.id], row.multiplier)
   }
   for (const row of state.models.qoder) {
-    addCatalogEntry([row.id, ...row.aliases], row.factor)
+    addCatalogEntry('qoder', [row.id, ...row.aliases], row.factor)
   }
 
-  const multiplierOf = model => {
+  const catalogFactorOf = (gateway, model) => {
     const lower = String(model || '').toLowerCase()
     for (const entry of catalogEntries) {
+      if (entry.gateway !== gateway) continue
       for (const key of entry.keys) {
-        if (key.toLowerCase() === lower) return entry.multiplier
+        if (key.toLowerCase() === lower) return entry.factor
       }
     }
     return null
   }
 
-  // 校准基线：只用「有实测单价 + 有目录倍率」的模型，按样本数加权。
-  let weightedCost = 0
-  let weightedMultiplier = 0
-  for (const row of detail) {
-    if (row.source !== 'gateway') continue
-    const multiplier = multiplierOf(row.model)
-    if (!(multiplier > 0)) continue
-    const samples = Math.max(1, Number(row.samples) || 1)
-    weightedCost += row.costPer1k * samples
-    weightedMultiplier += multiplier * samples
+  // 4) 两台网关各自的校准基线（积分/千 token/倍率单位），不要跨网关混用。
+  let wbCost = 0
+  let wbFactor = 0
+  for (const [model, current] of wbMeasured) {
+    const factor = catalogFactorOf('workbuddy', model)
+    if (!(factor > 0)) continue
+    wbCost += current.weighted
+    wbFactor += factor * current.samples
   }
-  const base = weightedMultiplier > 0
-    ? weightedCost / weightedMultiplier
-    : toNumber(opts.catalogBaseCreditsPer1k)
-  state.catalogBase = Number.isFinite(base) && base > 0 ? base : 0
+  const wbBase = wbFactor > 0 ? wbCost / wbFactor : toNumber(opts.catalogBaseCreditsPer1k)
+  state.catalogBase = Number.isFinite(wbBase) && wbBase > 0 ? wbBase : 0
 
-  // 目录估价：alias 也写进查表（大小写不敏感），但每个上游模型只在明细里留一行。
-  const pricedKeys = new Set(Object.keys(price).map(key => key.toLowerCase()))
+  let qoderCost = 0
+  let qoderFactor = 0
+  for (const item of qoderMeasured.values()) {
+    const factor = catalogFactorOf('qoder', item.model)
+    if (!(factor > 0)) continue
+    qoderCost += item.rate * item.tokens
+    qoderFactor += factor * item.tokens
+  }
+  const qoderBase = qoderFactor > 0 ? qoderCost / qoderFactor : 0
+  state.catalogBaseQoder = Number.isFinite(qoderBase) && qoderBase > 0 ? qoderBase : 0
+
+  // 5) 目录估价 + 免费模型（倍率 0 是确定值，不是估算）。
+  const seenCatalogKeys = new Set()
+  const freeModels = new Set()
   for (const entry of catalogEntries) {
-    const multiplier = entry.multiplier
-    if (!Number.isFinite(multiplier) || multiplier < 0) continue
-    const keys = entry.keys.filter(key => !pricedKeys.has(key.toLowerCase()))
-    if (keys.length === 0) continue
-    // 倍率 0 = 上游声明的免费模型，0 积分是确定值而不是估算。
-    const isEstimate = multiplier > 0
-    const value = isEstimate
-      ? state.catalogBase > 0 ? Math.round(multiplier * state.catalogBase * 1e6) / 1e6 : null
-      : 0
-    if (value === null) continue
-    for (const key of keys) {
-      price[key] = value
-      pricedKeys.add(key.toLowerCase())
-    }
-    detail.push({ model: entry.keys[0], costPer1k: value, samples: 0, accounts: [], source: 'catalog', estimated: isEstimate })
+    const factor = entry.factor
+    if (!Number.isFinite(factor) || factor < 0) continue
+    const base = entry.gateway === 'qoder' ? state.catalogBaseQoder : state.catalogBase
+    const isFree = factor === 0
+    const rate = isFree ? 0 : base > 0 ? Math.round(factor * base * 1e6) / 1e6 : null
+    if (rate === null) continue
+    entry.keys.forEach((model, index) => {
+      const key = model.toLowerCase()
+      if (isFree) freeModels.add(key)
+      if (seenCatalogKeys.has(key)) return
+      seenCatalogKeys.add(key)
+      pushEntry({
+        model,
+        rate,
+        source: 'catalog',
+        measured: false,
+        free: isFree,
+        canonical: index === 0,
+      })
+    })
   }
 
+  // 6) 配置覆盖优先级最高。
   let overridden = false
   for (const [rawModel, rawValue] of Object.entries(opts.creditsPer1k || {})) {
     const model = stripRealm(rawModel)
-    const value = Number(rawValue)
-    if (!model || !Number.isFinite(value) || value < 0) continue
-    price[model] = value
-    const existing = detail.find(row => row.model === model)
-    if (existing) {
-      existing.costPer1k = value
-      existing.source = 'config'
-      existing.estimated = false
-    } else {
-      detail.push({ model, costPer1k: value, samples: 0, accounts: [], source: 'config', estimated: false })
-    }
+    const rate = Number(rawValue)
+    if (!model || !Number.isFinite(rate) || rate < 0) continue
+    pushEntry({ model, rate, source: 'config', measured: false, canonical: true })
     overridden = true
   }
 
-  const measured = detail.filter(row => row.source === 'gateway').length
-  const estimated = detail.filter(row => row.estimated === true).length
+  // 7) 建索引：精确 key 取最高优先级；归一 key 收集实测候选（给聚合别名兜底）。
+  const index = new Map()
+  const normalized = new Map()
+  for (const entry of entries) {
+    const key = entry.model.toLowerCase()
+    const current = index.get(key)
+    if (!current || pricePriority(entry) > pricePriority(current)) index.set(key, entry)
+    if (entry.measured && !entry.free && !freeModels.has(key)) {
+      const normalizedKey = normalizeModelKey(entry.model)
+      if (!normalizedKey) continue
+      const list = normalized.get(normalizedKey) || []
+      list.push(entry)
+      normalized.set(normalizedKey, list)
+    }
+  }
+  state.priceIndex = index
+  state.priceNormalized = normalized
+
+  const price = {}
+  for (const [key, entry] of index) price[key] = entry.rate
   state.price = price
+
+  // 8) 明细：每个上游 canonical 模型一行，单价按实际会用的解析结果展示。
+  const canonical = new Map()
+  for (const entry of entries) {
+    if (!entry.canonical) continue
+    const key = entry.model.toLowerCase()
+    if (!canonical.has(key)) canonical.set(key, entry.model)
+  }
+  const detail = []
+  for (const [key, model] of canonical) {
+    const resolved = resolvePrice(state, model, true)
+    if (!resolved) continue
+    const best = index.get(key)
+    detail.push({
+      model,
+      costPer1k: Math.round(resolved.rate * 1e6) / 1e6,
+      samples: best && best.samples ? best.samples : 0,
+      accounts: best && best.accounts ? best.accounts : [],
+      source: resolved.source,
+      measured: resolved.measured === true,
+      estimated: !resolved.measured && !resolved.free && resolved.source !== 'config',
+    })
+  }
+  const estimated = detail.filter(row => row.estimated === true).length
+  const measuredCount = detail.filter(row => row.measured === true).length
   state.priceDetail = detail.sort((left, right) => left.model.localeCompare(right.model))
   state.priceBasis = overridden
     ? 'config'
-    : measured > 0
+    : measuredCount > 0
       ? estimated > 0 ? 'gateway+catalog' : 'gateway'
       : detail.length > 0 ? 'catalog' : 'none'
   state.priceEstimated = estimated
@@ -1185,30 +1393,20 @@ function isFreeEggProvider(state, provider) {
   return state.freeEggProviders instanceof Set && state.freeEggProviders.has(name)
 }
 
-/** 单价查表：先精确匹配，再小写兜底（Qoder 目录 id 形如 Qwen3.8-Flash）。 */
-function priceOf(state, model) {
-  const key = stripRealm(model)
-  if (!key) return null
-  if (Number.isFinite(state.price[key])) return state.price[key]
-  const lower = key.toLowerCase()
-  for (const [name, value] of Object.entries(state.price)) {
-    if (name.toLowerCase() === lower && Number.isFinite(value)) return value
-  }
-  return null
-}
-
 /**
- * 折算一轮积分。providers 为空表示来源未知（旧数据）→ 仍按模型名尽量折算；
- * 有 provider 但不是 free-egg → 不计积分（返回 null，底栏只统计 free-egg 部分）。
+ * 折算一轮积分。providers 为空表示来源未知（旧数据）→ 按模型名尽量折算；
+ * 有 provider 但不是 free-egg → 不计积分（返回 null）。
+ * free-egg provider 的模型可能是聚合别名，允许用「归一实测」兜底。
  */
 function estimateCredits(state, tokens, models, providers) {
   if (!tokens || tokens <= 0) return 0
   const list = providers ? [...providers] : []
-  if (list.length > 0 && !list.some(provider => isFreeEggProvider(state, provider))) return null
+  const allowAlias = list.length === 0 || list.some(provider => isFreeEggProvider(state, provider))
+  if (list.length > 0 && !allowAlias) return null
   const prices = []
   for (const model of models || []) {
-    const value = priceOf(state, model)
-    if (Number.isFinite(value)) prices.push(value)
+    const resolved = resolvePrice(state, model, allowAlias)
+    if (resolved) prices.push(resolved.rate)
   }
   if (prices.length === 0) return null
   const per1k = prices.reduce((sum, value) => sum + value, 0) / prices.length
@@ -1335,6 +1533,7 @@ function buildPayload(state, ledger, opts, sessionId) {
       priceBasis: state.priceBasis,
       priceEstimated: state.priceEstimated || 0,
       catalogBase: state.catalogBase || 0,
+      catalogBaseQoder: state.catalogBaseQoder || 0,
       freeEggProviders: [...(state.freeEggProviders || [])],
       autoCheckin: opts.autoCheckin,
     },
