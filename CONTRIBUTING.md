@@ -1,6 +1,7 @@
 # 参与贡献
 
 欢迎 issue 与 PR。改动前请先读一遍 [README](README.md) 的「工作原理」与「已知限制」。
+参与本项目即表示同意遵守 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
 
 ## 开发环境
 

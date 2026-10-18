@@ -1,0 +1,59 @@
+name: Bug 报告
+description: 报告插件功能异常
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！提交前请先搜索已有 issue，并按提示对日志做脱敏。
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 发生了什么？你期望的是什么？
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开 DSH，进入任意对话
+        2. 侧边栏 / 设置页出现 ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: dsh-version
+    attributes:
+      label: DSH 版本与客户端
+      placeholder: 例如 官方桌面端 0.x / dsh CLI 0.x（web profile）
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统与 Node.js 版本
+      placeholder: 例如 Windows 11 / Node 22
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及的界面位置 / 数据来源
+      multiple: true
+      options:
+        - 侧边栏积分区块
+        - 输入框下方本会话积分
+        - 每轮对话积分
+        - 设置页
+        - WorkBuddy 网关
+        - Qoder 网关
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图 / 配置片段
+      description: 请先删除账号昵称、uid、api_key、面板密码、内网地址等敏感信息。
+      render: shell
+    validations:
+      required: false
