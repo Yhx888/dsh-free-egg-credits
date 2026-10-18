@@ -3,6 +3,19 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.2] - 2026-10-18
+
+### 修复
+
+- **WorkBuddy 限流重置时间不显示**：网关 `/panel/api/overview` 的
+  `rate_limited_models[].reset_at` 在无上游重置文案时输出 Go 零值
+  `0001-01-01T00:00:00Z`（`time.Time` 的 `omitempty` 对结构体不生效）。插件原样透传后，
+  客户端 `Date.parse` 得到负数，`reset_at || until` 的回落失效：侧边栏徽标只剩「限流」
+  没有 HH:mm，设置页则显示 0001 年的日期。现 Host 侧统一归一：早于 1970 的时间视为
+  缺失，限流回落到 `until`（如「限流 18:13」）；`degrade_until`、`last_success`、
+  `last_seen` 等透传时间字段统一过归一，避免同类零值产生「01-01 08:00」式假日期
+  （网关侧 `time.Time` 值类型 + `omitempty` 的通病；本仓库只做展示层兼容）。
+
 ## [1.1.1] - 2026-10-18
 
 ### 修复

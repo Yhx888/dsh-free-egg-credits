@@ -263,6 +263,17 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback
 }
 
+/**
+ * 网关时间字段归一：Go 的 time.Time 零值经 omitempty 仍会序列化成
+ * "0001-01-01T00:00:00Z"（omitempty 对结构体无效），不能当有效时刻；早于 1970 的
+ * 一律视为缺失，让调用侧回落（限流缺 reset_at 时用 until）。非法字符串同样归空。
+ */
+function normalizeTimestamp(value) {
+  if (typeof value !== 'string' || value === '') return ''
+  const ms = Date.parse(value)
+  return Number.isFinite(ms) && ms > 0 ? value : ''
+}
+
 function round2(value) {
   return Math.round(Number(value) * 100) / 100
 }
@@ -769,20 +780,22 @@ function applyOverview(state, overview, opts) {
       cooling: account.cooling === true,
       disabled: account.disabled === true,
       disabledReason: typeof account.disabled_reason === 'string' ? account.disabled_reason : '',
-      lastSuccess: typeof account.last_success === 'string' ? account.last_success : '',
-      // 模型级限流台账（6004）：每模型一行 until/reset_at，用于展示恢复日期
+      lastSuccess: normalizeTimestamp(account.last_success),
+      // 模型级限流台账（6004）：每模型一行 until/reset_at，用于展示恢复日期。
+      // 两者都过 normalizeTimestamp：网关 Go 侧零值会序列化成 0001-01-01，直接当有效
+      // 时间会让客户端解析出负数、徽标回落逻辑失效（重置时间不显示）。
       rateLimitedModels: Array.isArray(account.rate_limited_models)
         ? account.rate_limited_models
             .filter(row => row && row.model)
             .map(row => ({
               model: String(row.model),
-              until: typeof row.until === 'string' ? row.until : '',
-              resetAt: typeof row.reset_at === 'string' ? row.reset_at : '',
+              until: normalizeTimestamp(row.until),
+              resetAt: normalizeTimestamp(row.reset_at),
               reason: typeof row.reason === 'string' ? row.reason : '',
             }))
         : [],
-      // 连败降权截止（degrade_until 零值/已过时由展示侧过滤）
-      degradeUntil: typeof account.degrade_until === 'string' ? account.degrade_until : '',
+      // 连败降权截止（零值/已过时由展示侧过滤）
+      degradeUntil: normalizeTimestamp(account.degrade_until),
       consecutiveFails: toNumber(account.consecutive_fails),
       modelCosts: Array.isArray(account.model_costs)
         ? account.model_costs
@@ -791,7 +804,7 @@ function applyOverview(state, overview, opts) {
               model: String(row.model),
               costPer1k: toNumber(row.cost_per_1k),
               samples: toNumber(row.samples),
-              lastSeen: typeof row.last_seen === 'string' ? row.last_seen : '',
+              lastSeen: normalizeTimestamp(row.last_seen),
             }))
         : [],
     }))
