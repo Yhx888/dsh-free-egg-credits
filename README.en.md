@@ -1,3 +1,5 @@
+<p align="center"><img src="icon.svg" width="72" height="72" alt="Free Egg Credits icon"></p>
+
 # Free Egg Credits
 
 [中文](README.md) | [English](README.en.md)
