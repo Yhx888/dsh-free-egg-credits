@@ -1,0 +1,61 @@
+{
+  "name": "dsh-free-egg-credits",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Free Egg 积分：在 DSH 界面里显示各反代网关（WorkBuddy / Qoder）账号的可用积分、每日签到状态，以及每条对话消耗的积分。",
+  "license": "MIT",
+  "author": "Yhx888 (Hahayo)",
+  "homepage": "https://github.com/Yhx888/dsh-free-egg-credits#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yhx888/dsh-free-egg-credits.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Yhx888/dsh-free-egg-credits/issues"
+  },
+  "main": "./index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node --check index.js && node --check client.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "workbuddy",
+    "qoder",
+    "credits",
+    "checkin"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.en.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-chat",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}

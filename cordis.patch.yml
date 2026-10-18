@@ -1,0 +1,28 @@
+# WorkBuddy 积分插件：Host 半负责读本地网关与折算积分，Client 半负责界面。
+# 配置项均可省略；下面列出的是默认值，需要改时直接改这里（用户 patch 层随升级保留）。
+- insert:
+    - id: free-egg-credits
+      name: 'dsh-free-egg-credits'
+      config:
+        # 本地 WorkBuddy 反代网关地址（面板 /panel/api/* 的宿主）。
+        gatewayBaseUrl: 'http://127.0.0.1:7863'
+        # 网关配置文件：从中读取 api_key；留空则用本插件包目录上两级的 config.json。
+        gatewayConfigPath: ''
+        # 只统计这些域的账号（国内账号 = cn）。
+        realms: [cn]
+        # 面板自动补签：打开界面时若当天还没有签到结果，就调用一次单号签到接口
+        # 判定状态（已签到是幂等的；未签到则顺带完成当天签到）。
+        autoCheckin: true
+        # 几点之后才做自动补签（避免凌晨误触发）。
+        checkinAfterHour: 8
+        # 签到失败后的重试间隔（分钟）。
+        checkinRetryMinutes: 10
+        # 网关快照缓存时长（秒）。
+        refreshSeconds: 30
+        # 积分单价覆盖：模型名 → 积分/千 token。留空则用网关实测扣费台账折算。
+        creditsPer1k: {}
+        # Qoder 反代网关（qoder2api-hub，127.0.0.1:8790）：积分并列显示。
+        # panelPasswordFile 指向面板密码文件（本机路径，勿提交进仓库）；留空回退面板默认 admin。
+        qoder:
+          baseUrl: 'http://127.0.0.1:8790'
+          panelPasswordFile: ''

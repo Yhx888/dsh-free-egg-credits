@@ -1,0 +1,196 @@
+# Free Egg Credits
+
+[中文](README.md) | [English](README.en.md)
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-3c873a.svg)](package.json)
+[![DSH plugin](https://img.shields.io/badge/DSH-plugin-4b8bf5.svg)](https://github.com/topics/dsh-plugin)
+
+A plugin for the [DSH (DeepSeek Harness)](https://github.com/deepseek-ai) web UI that surfaces the
+**available credits**, **daily check-in state** of accounts on your local reverse-proxy gateways
+(WorkBuddy / Qoder), and the **credits each conversation** is estimated to have consumed — in the
+sidebar, under the composer, at the end of every turn, and in a settings section.
+
+> Credits are **estimates**: the per-model rate comes from the gateway's measured `usage.credit`
+> ledger, so the UI always prefixes values with `≈`.
+
+## Where it shows up
+
+- **Sidebar footer (above the account row)**: a credits block. Each row is
+  "status dot · account name · source badge (WB/Qoder) · balance". Check-in state is expressed only
+  by the leftmost dot (green = checked in today); rate-limit / degrade / failure streaks appear as
+  badges with a recovery time. Hidden while the sidebar is collapsed.
+- **Below the composer**: total estimated credits for the current conversation.
+- **End of each turn**: estimated credits for that turn (`This turn ≈N credits`; hover for tokens
+  and models).
+- **Settings → Free Tier Credits**: account cards (name / source / balance / check-in / usage /
+  check-in now), rate-limit and degrade details, the measured credit rate, recent chats and
+  per-turn breakdown.
+
+WorkBuddy and Qoder accounts share the same row/card layout and are distinguished only by the
+source badge.
+
+## Install
+
+The plugin has no runtime dependencies; all you need is a working DSH web GUI.
+
+### Option 1: install from GitHub
+
+```bash
+dsh plugin --profile web add github:Yhx888/dsh-free-egg-credits
+```
+
+Then add the configuration from the [Configuration](#configuration) section and restart DSH.
+
+> The `desktop` profile managed by the official desktop app rejects CLI installs
+> (`managed exclusively by the Electron application`); use the manual link below in that case.
+
+### Option 2: manual link (desktop app / local development)
+
+Install it as a `link:` dependency in the DSH profile — no copy into `node_modules`, and source
+changes take effect after restarting DSH:
+
+```jsonc
+// ~/.dsh/profiles/<profile>/package.json
+"dependencies": {
+  "dsh-free-egg-credits": "link:/absolute/path/to/dsh-free-egg-credits"
+},
+"dsh": { "profile": { "bundles": [ "...", "dsh-free-egg-credits" ] } }
+```
+
+```powershell
+# A junction does not need administrator rights
+New-Item -ItemType Junction `
+  -Path "$env:USERPROFILE\.dsh\profiles\<profile>\node_modules\dsh-free-egg-credits" `
+  -Target "C:\absolute\path\to\dsh-free-egg-credits"
+```
+
+Changes to the host half (`index.js`) require a DSH restart; client-half changes only need a page
+refresh.
+
+## External dependencies (optional)
+
+| Dependency | Purpose | Config |
+|---|---|---|
+| WorkBuddy2API gateway (`workbuddy2api`) | WorkBuddy / CodeBuddy account credits and check-in | `gatewayBaseUrl`, `gatewayConfigPath` |
+| Qoder gateway (`qoder2api-hub`) | Qoder account credits and check-in scheduler | `qoder.baseUrl`, `qoder.panelPasswordFile` |
+
+Neither gateway is part of this repository; the plugin only reads their HTTP APIs. Gateway keys and
+the panel password are read on the host side and are never sent to the browser.
+
+## Configuration
+
+Put this in the target profile's `cordis.patch.yml` (plugin id `free-egg-credits`):
+
+```yaml
+- id: free-egg-credits
+  config:
+    gatewayBaseUrl: 'http://127.0.0.1:7863'
+    gatewayConfigPath: 'C:/path/to/workbuddy2api/config.json'
+    realms: [cn]
+    autoCheckin: true
+    checkinAfterHour: 8
+    checkinRetryMinutes: 10
+    refreshSeconds: 30
+    creditsPer1k: {}
+    qoder:
+      baseUrl: 'http://127.0.0.1:8790'
+      panelPasswordFile: 'C:/path/to/qoder2api/.panel-password'
+```
+
+> This layer **replaces** the bundle-level config wholesale (it is not a deep merge). Once you
+> write a `qoder` key, include all of its fields (`baseUrl` is required; `panelPasswordFile`,
+> `panelPassword` and `enabled` are optional).
+
+| Field | Default | Description |
+|---|---|---|
+| `gatewayBaseUrl` | `http://127.0.0.1:7863` | WorkBuddy gateway URL |
+| `gatewayConfigPath` | `config.json` two levels above the package | Reads `api_key` from the gateway config. The default only works for the dev layout where the plugin sits inside the gateway repo; when installed elsewhere, point this at the gateway `config.json` explicitly — otherwise no key is found, the gateway is reported offline and the sidebar only shows a title with no account rows |
+| `apiKey` | empty | Inline key (takes precedence over the config file) |
+| `realms` | `[cn]` | Which realms to count; mainland accounts are `cn` |
+| `autoCheckin` | `true` | Auto check-in / check-in state probing |
+| `checkinAfterHour` | `8` | Do not probe before this hour |
+| `checkinRetryMinutes` | `10` | Retry interval after a failure |
+| `refreshSeconds` | `30` | Gateway snapshot cache |
+| `creditsPer1k` | `{}` | Rate overrides (model name → credits per 1k tokens) |
+| `qoder` | none | Qoder gateway config: `baseUrl`, `panelPasswordFile`, `panelPassword` (inline fallback), `enabled`. Omit to disable the Qoder source |
+
+## Data sources
+
+| Data | Source |
+|---|---|
+| WorkBuddy credits | Gateway panel `GET /panel/api/overview` (accounts with `realm=cn`) |
+| WorkBuddy check-in | Once per day, on first UI open, a single-account check-in call (`POST /panel/api/accounts/{uid}/checkin`). Upstream returns `10001 already checked in` for repeats — idempotent, no side effects; if not checked in yet, it completes today's check-in |
+| Qoder credits | Qoder gateway `GET /credits/summary` (registered view: `credits_remain` / `credits_size`) |
+| Qoder check-in | Qoder gateway `GET /scheduler`: if the scheduler ran a check-in pass today, it counts as checked in; `next_run_time` is the next pass |
+| Tokens per turn | `assistant/message.usage` in DSH session events (folded on the host, never persisted) |
+| Credit rate | `model_costs[].cost_per_1k` from gateway account state, weighted by sample count; overridable via config |
+| Rate limits | `rate_limited_models[]` (model / until / reset_at) and `degrade_until` from gateway account state; expired entries disappear automatically. The **reset time** uses upstream `reset_at` (when the model truly becomes available again, falling back to `until`), shown as `Limited HH:mm` in the sidebar (latest across models); the settings page lists `until` separately as "local cooldown until" |
+
+## How it works
+
+The plugin has a host half and a client half:
+
+- **Host half (`index.js`)**: `inject: ['webServer']`; registers five endpoints under the
+  same-origin `/__dsh-wb-credits` prefix (`GET /snapshot`, `GET /sessions`, `POST /refresh`,
+  `POST /checkin`, `POST /qoder/checkin`). It reads gateway panels, decides check-in state, folds
+  per-turn token usage from `session/event` plus the session log, and converts tokens to credits
+  with the measured rate. Keys, password and panel token only ever exist in this process.
+- **Client half (`client.js`)**: a hand-written `window.__ModuleLoader__` bundle that injects React
+  components into `sidebar.footer.action`, `conversation.composer.dock`,
+  `conversation.chat.turnTail` and `settings.section`. It only reads the same-origin endpoints
+  above and reuses host CSS variables (`--dsw-alias-*`).
+
+Check-in is probe-based: on the first UI open of the day, accounts that are not known to be checked
+in get one idempotent check-in call and its response decides the state. Set `autoCheckin: false` to
+disable automatic check-in; state may then show as unknown and you can check in manually from the
+settings page.
+
+## Privacy and security
+
+- **No telemetry**: the plugin only talks to the local gateway URLs in its config.
+- **Credentials stay on the host**: the WorkBuddy `api_key` is read from the gateway `config.json`
+  and the Qoder panel password from its password file; neither appears in snapshots sent to the
+  browser.
+- **No arbitrary proxying**: the check-in endpoint only accepts account uids that are already in
+  the snapshot.
+- Plugin routes rely on DSH's own authentication; **do not expose the DSH port to the public
+  internet without an auth layer**.
+
+Please report security issues privately as described in [SECURITY.md](SECURITY.md).
+
+## Known limitations
+
+- Credits are estimates: actual charges during upstream free periods can be lower, hence the `≈`.
+- Conversations that used non-WorkBuddy models (e.g. stepfun) only show tokens; credits show `—`.
+- Check-in state depends on one idempotent check-in call; with `autoCheckin` disabled it can be
+  "unknown".
+- Qoder credits use the upstream registered view (`credits_remain` / `credits_size`) and are
+  written back by the gateway after check-in or usage. Snapshots are cached for 60 seconds; the
+  settings page refresh forces a new pull.
+- Built against the current DSH `slots` / `webServer` / `session/event` mechanisms; major DSH
+  changes may require follow-up work.
+
+## Development
+
+```bash
+npm run check   # node --check index.js && node --check client.js
+```
+
+- No runtime dependencies; no `npm install` needed.
+- Host-half changes require a DSH restart; client-half changes only a page refresh.
+- When adding UI strings, update both the `ZH` and `EN` tables in `client.js`.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details and [CHANGELOG.md](CHANGELOG.md) for release
+history.
+
+## License
+
+[MIT](LICENSE) © 2026 Yhx888
+
+## Disclaimer
+
+This project is not affiliated with WorkBuddy, Qoder or DeepSeek, and it does not include any
+upstream service or reverse-proxy gateway implementation. It is only a presentation layer that
+reads the public HTTP APIs of gateways running on your own machine. Using third-party gateways may
+be subject to their own terms; you are responsible for complying with them.

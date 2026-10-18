@@ -1,0 +1,27 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 语法检查（Host / Client 半）
+        run: |
+          node --check index.js
+          node --check client.js
+      - name: JSON 解析检查
+        run: |
+          node -e "const fs=require('fs'); for (const f of ['package.json','locale/zh.json','locale/en.json']) JSON.parse(fs.readFileSync(f,'utf8')); console.log('json ok')"
+      - name: 打包清单检查
+        run: npm pack --dry-run

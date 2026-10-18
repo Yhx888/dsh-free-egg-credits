@@ -1,0 +1,15 @@
+# 本地运行时/敏感文件
+node_modules/
+.panel-password
+*.log
+.env
+.env.local
+
+# 本地调试产物
+.playwright-cli/
+*.tgz
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store

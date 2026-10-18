@@ -1,0 +1,8 @@
+# 统一 LF 入库，避免 Windows 检出时整文件 CRLF 造成无意义 diff
+* text=auto eol=lf
+
+*.svg text
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
