@@ -27,6 +27,8 @@ window.__ModuleLoader__.load({
       'section.title': 'Free Egg 积分',
       'section.desc': 'DeepSeek / Qwen 各上游账号的可用积分、每日签到状态，以及每条对话消耗的积分。',
       'sidebar.title': 'Free Egg 积分',
+      'sidebar.today': '今日消耗',
+      'sidebar.todayTitle': '今日已消耗 ≈{credits} 积分（本地时间 0 点起）',
       'dock.label': 'Free Egg',
       'dock.loading': 'WorkBuddy 积分读取中…',
       'dock.error': 'WorkBuddy 网关未连接',
@@ -60,6 +62,7 @@ window.__ModuleLoader__.load({
       'settings.tokens': 'tokens',
       'settings.credits': '≈积分',
       'settings.usage': '已用 {used} / 总 {total}',
+      'settings.today': '今日消耗 ≈{credits} 积分',
       'settings.models': '模型',
       'settings.time': '时间',
       'settings.empty': '暂无数据',
@@ -96,6 +99,8 @@ window.__ModuleLoader__.load({
       'section.title': 'Free Tier Credits',
       'section.desc': 'Credits and daily check-in state across DeepSeek / Qwen upstream accounts, plus credits per conversation.',
       'sidebar.title': 'Free Tier Credits',
+      'sidebar.today': 'Today',
+      'sidebar.todayTitle': '≈{credits} credits used today (since local midnight)',
       'dock.label': 'Free Egg',
       'dock.loading': 'Reading WorkBuddy credits…',
       'dock.error': 'WorkBuddy gateway unreachable',
@@ -129,6 +134,7 @@ window.__ModuleLoader__.load({
       'settings.tokens': 'Tokens',
       'settings.credits': '≈Credits',
       'settings.usage': 'Used {used} / {total}',
+      'settings.today': '≈{credits} credits used today',
       'settings.models': 'Model',
       'settings.time': 'Time',
       'settings.empty': 'No data yet',
@@ -506,6 +512,8 @@ window.__ModuleLoader__.load({
       '.wbcd-side-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}',
       '.wbcd-side-credits{flex:none;color:var(--dsw-alias-label-primary);font-weight:500}',
       '.wbcd-side-badge{flex:none;font-size:10px;line-height:14px;padding:0 4px;border-radius:4px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1);font-weight:500}',
+      '.wbcd-side-today{flex:none;display:inline-flex;align-items:center;gap:2px;font-size:10px;line-height:14px;padding:0 4px;border-radius:4px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1);font-variant-numeric:tabular-nums}',
+      '.wbcd-side-today svg{flex:none;opacity:.7}',
       '.wbcd-side-flag{flex:none;font-size:10px;line-height:14px;padding:0 4px;border-radius:4px;color:var(--dsw-alias-state-error-primary);border:1px solid var(--dsw-alias-state-error-primary)}',
       '.wbcd-side-flag-degrade{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary)}',
       '.wbcd-side-offline{color:var(--dsw-alias-state-error-primary);flex:none}',
@@ -583,6 +591,22 @@ window.__ModuleLoader__.load({
         h('path', {
           d: 'M8 2.6a5.4 5.4 0 1 0 5.1 7.2h-1.7A3.8 3.8 0 1 1 8 4.2c1 0 1.9.4 2.6 1.1l-1.4 1.4h3.9V2.8l-1.2 1.2A5.36 5.36 0 0 0 8 2.6Z',
           fill: 'currentColor',
+        }),
+      )
+    }
+
+    /** 今日消耗的小图标：向下箭头（表示扣分/下降）。 */
+    function TodayIcon() {
+      return h(
+        'svg',
+        { viewBox: '0 0 10 10', width: 9, height: 9, 'aria-hidden': 'true', focusable: 'false' },
+        h('path', {
+          d: 'M5 1.3v7M2.5 5.5 5 8l2.5-2.5',
+          fill: 'none',
+          stroke: 'currentColor',
+          'stroke-width': 1.2,
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
         }),
       )
     }
@@ -815,6 +839,20 @@ window.__ModuleLoader__.load({
             h('span', { className: 'wbcd-dot wbcd-' + visual.state }),
             h('span', { className: 'wbcd-side-name' }, accountName(account)),
             h('span', { className: 'wbcd-side-badge' }, source === 'qoder' ? 'Qoder' : 'WB'),
+            Number.isFinite(Number(account.todayCredits))
+              ? h(
+                  'span',
+                  {
+                    className: 'wbcd-side-today',
+                    title: translateWith(props.t, 'sidebar.todayTitle', '今日已消耗 ≈{credits} 积分（本地时间 0 点起）', {
+                      credits: formatCredits(account.todayCredits),
+                    }),
+                    'aria-label': translateWith(props.t, 'sidebar.today', '今日消耗'),
+                  },
+                  h(TodayIcon),
+                  formatCredits(account.todayCredits),
+                )
+              : null,
             limited
               ? h('span', { className: 'wbcd-side-flag' }, flagText(translateWith(props.t, 'limit.flag', '限流'), limitMs))
               : degradeMs > 0
@@ -1061,6 +1099,11 @@ window.__ModuleLoader__.load({
             ? h('div', { className: 'wbcd-line' }, tr('settings.usage', '已用 {used} / 总 {total}', {
                 used: formatBalance(used),
                 total: formatBalance(total),
+              }))
+            : null,
+          Number.isFinite(Number(account.todayCredits))
+            ? h('div', { className: 'wbcd-line' }, tr('settings.today', '今日消耗 ≈{credits} 积分', {
+                credits: formatCredits(account.todayCredits),
               }))
             : null,
           last ? h('div', { className: 'wbcd-line' }, tr('settings.lastSuccess', '最近成功 {time}', { time: last })) : null,

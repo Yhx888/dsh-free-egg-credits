@@ -10,7 +10,10 @@
  *
  * 配置项见 cordis.patch.yml 注释；所有配置都可省略。
  */
-import { readFile, stat } from 'node:fs/promises'
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** Host 插件硬依赖：同源路由承载。 */
@@ -46,9 +49,50 @@ const PACKAGE_CONFIG_PATH = (() => {
   }
 })()
 
+/**
+ * 当日消耗账本落盘路径：<DSH_HOME>/free-egg-credits/daily.json。
+ * WorkBuddy 网关不提供「按天积分」接口，只能靠余额差值累计；落盘后重启 DSH
+ * 不会把当天已经累计的消耗清零（停机期间的消耗也会在首个快照差值里补上）。
+ */
+const DAILY_STATE_PATH = (() => {
+  try {
+    const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+    return join(home, 'free-egg-credits', 'daily.json')
+  } catch {
+    return ''
+  }
+})()
+
+/** 读当日账本（同步读，插件启动时只读一次；文件不存在/损坏/跨天一律视为没有）。 */
+function loadDailyState() {
+  if (!DAILY_STATE_PATH) return null
+  try {
+    const data = JSON.parse(readFileSync(DAILY_STATE_PATH, 'utf8'))
+    if (!data || typeof data !== 'object' || data.date !== dateKey()) return null
+    return data
+  } catch {
+    return null
+  }
+}
+
+/** 原子写当日账本（tmp + rename）；失败只影响重启后的延续性，不影响当前展示。 */
+async function saveDailyState(daily) {
+  if (!DAILY_STATE_PATH || !daily) return
+  const payload = JSON.stringify({
+    date: daily.date,
+    workbuddy: Object.fromEntries(daily.workbuddy),
+    balances: Object.fromEntries(daily.wbCredits),
+    updatedAt: new Date().toISOString(),
+  })
+  const tmp = DAILY_STATE_PATH + '.tmp'
+  await mkdir(dirname(DAILY_STATE_PATH), { recursive: true })
+  await writeFile(tmp, payload, 'utf8')
+  await rename(tmp, DAILY_STATE_PATH)
+}
+
 export function apply(ctx, rawConfig = {}) {
   const opts = normalizeConfig(rawConfig)
-  const state = createState()
+  const state = createState(loadDailyState())
   state.freeEggProviders = new Set(opts.freeEggProviders)
   const log = makeLogger()
   const gateway = createGateway(opts, log)
@@ -56,23 +100,83 @@ export function apply(ctx, rawConfig = {}) {
   const ledger = createLedger(ctx, log)
   const checkin = createCheckin(opts, gateway, state, log)
 
-  // 一轮结束后的「消耗归属」刷新：合并 1.5 秒内的多条事件，避免每个事件都打网关。
+  // ---- 会话 → 消耗账号归属 ------------------------------------------------
+  // 每个会话单独固定一个「承载账号」：一轮回复结束后按事件时刻就近匹配网关最近请求，
+  // 首次匹配后不再改（两个会话并发时不会来回跳；前台会话切换时侧边栏跟着换）。
+  const pendingAttribution = new Map()
   let activityTimer = null
+  /** 事件时刻与网关请求完成时刻的容差：assistant/message 通常紧跟请求完成。 */
+  const ATTRIBUTION_WINDOW_MS = 15_000
   function scheduleActivityRefresh() {
     if (activityTimer !== null) return
     activityTimer = setTimeout(() => {
       activityTimer = null
-      // 强制拉一次网关：WorkBuddy 面板的 token_usage 与 Qoder /usage/recent 都
-      // 在请求完成时回写，这一拍之后侧边栏就能看到是哪个账号在消耗。
-      refresh(true).catch(() => {})
-      refreshQoderActivity(state, qoderGateway, log, true).catch(() => {})
+      refreshActivityAttribution().catch(() => {})
     }, 1500)
     // Node 侧定时器不阻塞进程退出（DSH reload 时也无副作用）
     if (typeof activityTimer.unref === 'function') activityTimer.unref()
   }
+  async function refreshActivityAttribution() {
+    await Promise.allSettled([
+      refresh(true),
+      refreshQoderActivity(state, qoderGateway, log, true),
+    ])
+    attributePendingSessions()
+  }
+  function attributePendingSessions() {
+    if (pendingAttribution.size === 0) return
+    const candidates = [...state.activity.workbuddy.values(), ...state.activity.qoder.values()]
+    const now = Date.now()
+    for (const [sessionId, eventAt] of pendingAttribution) {
+      // 已固定的会话保持原账号，避免两个会话并发时来回切
+      if (state.activity.bySession.has(sessionId)) continue
+      let best = null
+      let bestDiff = Infinity
+      for (const candidate of candidates) {
+        if (!candidate || !candidate.at) continue
+        const diff = Math.abs(candidate.at - eventAt)
+        if (diff > ATTRIBUTION_WINDOW_MS || diff >= bestDiff) continue
+        best = candidate
+        bestDiff = diff
+      }
+      if (!best) continue
+      state.activity.bySession.set(sessionId, {
+        source: best.source,
+        uid: best.uid,
+        nickname: best.nickname,
+        model: best.model,
+        at: best.at,
+        pinnedAt: now,
+      })
+    }
+    pendingAttribution.clear()
+    // 只保留最近固定的会话，避免 Map 无限增长
+    if (state.activity.bySession.size > 200) {
+      const ordered = [...state.activity.bySession.entries()]
+        .sort((left, right) => (left[1].pinnedAt || 0) - (right[1].pinnedAt || 0))
+      for (let i = 0; i < ordered.length - 150; i += 1) state.activity.bySession.delete(ordered[i][0])
+    }
+  }
+
+  // ---- 当日消耗账本落盘（节流 3 秒） ----------------------------------------
+  let dailySaveTimer = null
+  function scheduleDailySave() {
+    if (dailySaveTimer !== null) return
+    dailySaveTimer = setTimeout(() => {
+      dailySaveTimer = null
+      const daily = state.daily
+      saveDailyState(daily)
+        .then(() => { if (daily) daily.dirty = false })
+        .catch(() => {})
+    }, 3000)
+    if (typeof dailySaveTimer.unref === 'function') dailySaveTimer.unref()
+  }
   ctx.effect(() => () => {
     if (activityTimer !== null) clearTimeout(activityTimer)
+    if (dailySaveTimer !== null) clearTimeout(dailySaveTimer)
     activityTimer = null
+    dailySaveTimer = null
+    pendingAttribution.clear()
   })
 
   // 会话事件：逐轮累计 token；同时记住最近活跃会话供设置页展示。
@@ -82,7 +186,12 @@ export function apply(ctx, rawConfig = {}) {
     // 子代理会话不参与「最近活跃对话」的时间线，只进账本（被问到才展示）。
     if (!session.header || session.header.origin !== 'subagent') state.lastSessionId = id
     ledger.note(id, event)
-    if (event && event.type === 'assistant/message') scheduleActivityRefresh()
+    if (!event || event.type !== 'assistant/message') return
+    // 非 free-egg provider 的请求不经过本地网关，不参与消耗归属
+    const source = sourceOfEvent(event)
+    if (source.provider && !isFreeEggProvider(state, source.provider)) return
+    pendingAttribution.set(id, Date.now())
+    scheduleActivityRefresh()
   })
 
   const route = (path, handler) => {
@@ -105,17 +214,23 @@ export function apply(ctx, rawConfig = {}) {
   async function refresh(force) {
     const work = refreshGateway(state, gateway, opts, log, force)
     if (qoderGateway) await refreshQoder(state, { qoder: qoderGateway }, opts, log)
+    work
+      .then(() => {
+        if (state.daily && state.daily.dirty) scheduleDailySave()
+      })
+      .catch(() => {})
     return work
   }
 
   async function handleSnapshot(req, res) {
     const url = new URL(req.url || '/', 'http://localhost')
-    const sessionId = url.searchParams.get('sessionId') || state.lastSessionId || ''
+    const requestedSessionId = url.searchParams.get('sessionId') || ''
+    const sessionId = requestedSessionId || state.lastSessionId || ''
     await refresh(false)
     await refreshQoderActivity(state, qoderGateway, log, false)
     await checkin.maybeAuto(6000)
     if (sessionId) await ledger.ensure(sessionId)
-    sendJson(res, 200, buildPayload(state, ledger, opts, sessionId))
+    sendJson(res, 200, buildPayload(state, ledger, opts, sessionId, requestedSessionId))
   }
 
   async function handleSessions(req, res) {
@@ -492,8 +607,9 @@ function createQoderGateway(opts, log) {
     },
     // 实测用量台账（按模型聚合 credit / total_tokens）：面板接口，需 panel token。
     usage: () => request('/usage'),
-    // 逐条用量台账（page 1 最新在前）：取最新一条即可知道最后哪个账号在跑。
-    recent: (limit = 3) => request(`/usage/recent?limit=${encodeURIComponent(limit)}`, { timeoutMs: 4000 }),
+    // 逐条用量台账（page 1 最新在前）：定位消耗账号 + 统计当天积分都要用。
+    recent: (limit = 3, page = 1) =>
+      request(`/usage/recent?limit=${encodeURIComponent(limit)}&page=${encodeURIComponent(page)}`, { timeoutMs: 4000 }),
     // 手动签到（设置页按钮用）；调度器每日 09/21 自动跑，这里只是手动补
     checkin: async () => request('/accounts/checkin', { method: 'POST', timeoutMs: 300000 }),
     accounts: () => request('/accounts'),
@@ -647,16 +763,67 @@ async function refreshQoder(state, gateway, opts, log) {
 const QODER_ACTIVITY_TTL_MS = 3_000
 /** 面板不可用时的退避：别每 3 秒刷一次失败日志。 */
 const QODER_ACTIVITY_RETRY_MS = 12_000
+/** 一次翻页的台账条数：Host 当天首次启动要翻到昨天为止，补齐已发生的消耗。 */
+const QODER_RECENT_PAGE = 100
+
+/** 本地时间当天 0 点（毫秒）。 */
+function startOfDayMs() {
+  const date = new Date()
+  date.setHours(0, 0, 0, 0)
+  return date.getTime()
+}
+
+/** 当日消耗账本的初始形状（跨天时整体替换）。 */
+function createDailyState() {
+  return {
+    date: dateKey(),
+    workbuddy: new Map(),   // uid → 当日已消耗积分（余额差值累计）
+    qoder: new Map(),       // uid → 当日已消耗积分（用量台账 credit 累加，精确）
+    wbCredits: new Map(),   // uid → 上次看到的余额（差值基线）
+    qoderLoaded: false,
+    qoderSeen: new Set(),
+    dirty: false,           // 有变动才落盘
+  }
+}
+
+/** 跨天时重置「当日消耗」累计；每次刷新都会先调一次。 */
+function ensureDaily(state) {
+  const today = dateKey()
+  if (state.daily && state.daily.date === today) return
+  state.daily = createDailyState()
+}
 
 /**
- * 刷新 Qoder「最近一次消耗」：/usage/recent 的 page 1 最新在前，
- * 取第一条带 account 的成功台账（按请求完成时写入，正好对应一轮回复结束）。
+ * WorkBuddy 当日消耗：网关每次请求会按上游 credit 扣减账号余额（取整），
+ * 这里累加两次快照之间的余额下降量；签到/任务导致的上调只更新基线、不计消耗。
+ * 基线/累计会落盘，DSH 重启后能接着算（停机期间的消耗也算进首个差值）。
+ */
+function accumulateWorkbuddyDaily(state) {
+  ensureDaily(state)
+  const daily = state.daily
+  for (const account of state.accounts) {
+    if (!account.uid) continue
+    const current = toNumber(account.credits)
+    const previous = daily.wbCredits.get(account.uid)
+    daily.wbCredits.set(account.uid, current)
+    if (previous === undefined || current >= previous) continue
+    daily.workbuddy.set(account.uid, (daily.workbuddy.get(account.uid) || 0) + (previous - current))
+    daily.dirty = true
+  }
+}
+
+/**
+ * 刷新 Qoder 最近用量：同时维护两件事——
+ *   ① 每个账号最近一次请求的候选（按事件时刻就近归属到会话）；
+ *   ② 当天每个账号消耗的 credit（/usage/recent 行自带 credit，精确值）。
+ * 当天首次（或 Host 刚启动）会往前翻页到昨天为止补齐历史，之后只取最新一页增量。
  */
 async function refreshQoderActivity(state, qoderGateway, log, force) {
   if (!qoderGateway || !qoderGateway.enabled) return
   if (!state.qoder || !state.qoder.enabled) return
   // 网关离线时不做无谓的面板请求（refreshQoder 已标记 online=false）
   if (state.qoder.online === false) return
+  ensureDaily(state)
   const now = Date.now()
   const fetchedAt = state.activity.qoderFetchedAt || 0
   if (!force) {
@@ -665,22 +832,52 @@ async function refreshQoderActivity(state, qoderGateway, log, force) {
   }
   state.activity.qoderFetchedAt = now
   try {
-    const payload = await qoderGateway.recent(3)
-    const rows = Array.isArray(payload?.rows) ? payload.rows : []
-    const latest = rows.find(row => row && !row.error && typeof row.account === 'string' && row.account)
-    if (!latest) return
-    const at = Number(latest.at) * 1000
-    if (!Number.isFinite(at) || at <= 0) return
-    const known = Array.isArray(state.qoder.accounts)
-      ? state.qoder.accounts.find(account => account.uid === latest.account)
-      : null
-    state.activity.qoder = {
-      at,
-      source: 'qoder',
-      uid: String(latest.account),
-      nickname: known ? known.nickname : String(latest.account).slice(0, 8),
-      model: stripRealm(latest.model || ''),
+    const dayStart = startOfDayMs()
+    const daily = state.daily
+    const pages = daily.qoderLoaded ? 1 : 10
+    const rows = []
+    for (let page = 1; page <= pages; page += 1) {
+      const payload = await qoderGateway.recent(QODER_RECENT_PAGE, page)
+      const batch = Array.isArray(payload?.rows) ? payload.rows : []
+      if (batch.length === 0) break
+      rows.push(...batch)
+      const oldest = batch[batch.length - 1]
+      const oldestAt = oldest && Number(oldest.at) ? Number(oldest.at) * 1000 : 0
+      if (oldestAt > 0 && oldestAt < dayStart) break
+      if (batch.length < QODER_RECENT_PAGE) break
     }
+    daily.qoderLoaded = true
+    const knownAccounts = Array.isArray(state.qoder.accounts) ? state.qoder.accounts : []
+    for (const row of rows) {
+      if (!row || row.error) continue
+      const account = typeof row.account === 'string' ? row.account : ''
+      const at = Number(row.at)
+      if (!account || !Number.isFinite(at) || at <= 0) continue
+      const atMs = at * 1000
+      if (atMs < dayStart) continue
+      // 当天消费精确累加（同一行只算一次）
+      const key = account + '|' + at + '|' + (row.total_tokens || 0)
+      if (!daily.qoderSeen.has(key)) {
+        daily.qoderSeen.add(key)
+        const credit = Number(row.credit)
+        if (Number.isFinite(credit) && credit > 0) {
+          daily.qoder.set(account, (daily.qoder.get(account) || 0) + credit)
+        }
+      }
+      // 会话归属候选：每个账号保留最近一条请求
+      const previous = state.activity.qoder.get(account)
+      if (previous && atMs <= previous.at) continue
+      const known = knownAccounts.find(item => item.uid === account)
+      state.activity.qoder.set(account, {
+        at: atMs,
+        source: 'qoder',
+        uid: account,
+        nickname: known ? known.nickname : account.slice(0, 8),
+        model: stripRealm(row.model || ''),
+      })
+    }
+    // 去重 Set 只服务于当天；异常大时清空重来（最多多算一页的极端情况可接受）
+    if (daily.qoderSeen.size > 50_000) daily.qoderSeen.clear()
   } catch (error) {
     state.activity.qoderFetchedAt = now + QODER_ACTIVITY_RETRY_MS
     log('读取 Qoder 最近用量失败', error)
@@ -692,7 +889,21 @@ async function refreshQoderActivity(state, qoderGateway, log, force) {
 // 快照状态
 // ---------------------------------------------------------------------------
 
-function createState() {
+function createState(persistedDaily) {
+  const daily = createDailyState()
+  // 恢复当天已累计的 WorkBuddy 消耗与余额基线（Qoder 消耗由网关台账现算，无需落盘）
+  if (persistedDaily && persistedDaily.date === daily.date) {
+    for (const [uid, value] of Object.entries(persistedDaily.workbuddy || {})) {
+      if (!uid) continue
+      const number = Number(value)
+      if (Number.isFinite(number) && number >= 0) daily.workbuddy.set(uid, number)
+    }
+    for (const [uid, value] of Object.entries(persistedDaily.balances || {})) {
+      if (!uid) continue
+      const number = Number(value)
+      if (Number.isFinite(number)) daily.wbCredits.set(uid, number)
+    }
+  }
   return {
     accounts: [],
     pool: null,
@@ -712,10 +923,11 @@ function createState() {
     lastSessionId: '',
     recentCache: null,
     qoder: null,
-    // 实时消耗归属：最近一次上游请求落在哪个账号（跨 WorkBuddy / Qoder）。
-    // WorkBuddy 取 /panel/api/overview 的 token_usage.last_used_at（面板实时回写）；
-    // Qoder 取面板 /usage/recent 的最新一条成功台账（3 秒缓存）。
-    activity: { workbuddy: null, qoder: null, qoderFetchedAt: 0 },
+    // 会话 → 承载账号：bySession 一旦固定就不再换（前台会话切换只切展示的会话）；
+    // workbuddy / qoder 是各账号最近一次请求的候选，用于按事件时刻就近归属。
+    activity: { bySession: new Map(), workbuddy: new Map(), qoder: new Map(), qoderFetchedAt: 0 },
+    // 当日消耗（本地 0 点起）：WorkBuddy 靠余额差值累计，Qoder 按用量台账精确累加
+    daily,
     // 网关模型目录（倍率 / price_factor），用于给未实测模型估价
     models: { workbuddy: [], qoder: [], workbuddyAt: 0, qoderAt: 0, fetching: null },
     // Qoder 实测用量台账（按模型 credit / total_tokens）
@@ -841,6 +1053,7 @@ function parseQoderCatalog(payload) {
 }
 
 function applyOverview(state, overview, opts) {
+  ensureDaily(state)
   const rawAccounts = Array.isArray(overview?.accounts) ? overview.accounts : []
   const wanted = new Set(opts.realms)
   state.accounts = rawAccounts
@@ -896,29 +1109,29 @@ function applyOverview(state, overview, opts) {
   state.version = typeof overview?.version === 'string' ? overview.version : ''
   noteWorkbuddyActivity(state)
   buildPrice(state, opts)
+  accumulateWorkbuddyDaily(state)
 }
 
 /**
- * 从账号列表折算「最近一次消耗」：token_usage.last_used_at 最新的账号即最后被网关
- * 选中的号（池轮换时只有被调用的账号会更新自己的最后使用时间）。
+ * 记录每个 WorkBuddy 账号最近一次请求（时刻/模型）：token_usage.last_used_at 随每次
+ * 调用回写，按会话归属时用「事件时刻最近的候选」匹配。
  */
 function noteWorkbuddyActivity(state) {
-  let latest = null
   for (const account of state.accounts) {
     const usage = account.tokenUsage
     if (!usage || !usage.lastUsedAt) continue
     const at = Date.parse(usage.lastUsedAt)
     if (!Number.isFinite(at) || at <= 0) continue
-    if (latest && at <= latest.at) continue
-    latest = {
+    const previous = state.activity.workbuddy.get(account.uid)
+    if (previous && at <= previous.at) continue
+    state.activity.workbuddy.set(account.uid, {
       at,
       source: 'workbuddy',
       uid: account.uid,
       nickname: account.nickname,
       model: stripRealm(usage.lastModel),
-    }
+    })
   }
-  if (latest) state.activity.workbuddy = latest
 }
 
 /**
@@ -1594,41 +1807,38 @@ function sessionView(state, ledger, sessionId) {
   }
 }
 
-/** 「正在消耗」判定窗口：最近一次请求距今 2 分钟内，且当前对话是 free-egg 模型。 */
-const ACTIVITY_WINDOW_MS = 120_000
-
 /**
- * 侧边栏「哪个账号在消耗」视图：取 WorkBuddy / Qoder 两侧最近一次请求中较新的那条。
- * active 需要同时满足：2 分钟以内 + 当前对话用 free-egg provider（否则只是「最近消耗」）。
+ * 侧边栏「这个会话由哪个账号承载」：只看前台会话自己固定到的账号，
+ * 不跟随全局最近一次请求（两个会话并发时不会来回跳）。
+ * 归属在每轮回复结束后固定；账号被删/不存在时不再高亮。
  */
-function activityView(state, session) {
-  const activity = state.activity || {}
-  let best = null
-  for (const item of [activity.workbuddy, activity.qoder]) {
-    if (!item || !item.at) continue
-    if (!best || item.at > best.at) best = item
-  }
-  if (!best) return null
-  const ageMs = Math.max(0, Date.now() - best.at)
-  const freeEgg = !session || session.freeEgg === true
+function activityView(state, sessionId) {
+  if (!sessionId) return null
+  const record = state.activity.bySession.get(sessionId)
+  if (!record) return null
+  const exists =
+    state.accounts.some(account => account.uid === record.uid) ||
+    ((state.qoder && state.qoder.accounts) || []).some(account => account.uid === record.uid)
+  if (!exists) return null
   return {
-    source: best.source,
-    uid: best.uid || '',
-    nickname: best.nickname || '',
-    model: best.model || '',
-    at: new Date(best.at).toISOString(),
-    ageSeconds: Math.round(ageMs / 1000),
-    active: ageMs <= ACTIVITY_WINDOW_MS && freeEgg,
+    source: record.source,
+    uid: record.uid,
+    nickname: record.nickname || '',
+    model: record.model || '',
+    at: new Date(record.at).toISOString(),
+    active: true,
   }
 }
 
-function buildPayload(state, ledger, opts, sessionId) {
+function buildPayload(state, ledger, opts, sessionId, activitySessionId) {
+  ensureDaily(state)
   const accounts = state.accounts.map(account => ({
     uid: account.uid,
     nickname: account.nickname,
     realm: account.realm,
     credits: account.credits,
     creditsTotal: account.creditsTotal,
+    todayCredits: round2(state.daily.workbuddy.get(account.uid) || 0),
     cooling: account.cooling,
     disabled: account.disabled,
     disabledReason: account.disabledReason,
@@ -1654,6 +1864,7 @@ function buildPayload(state, ledger, opts, sessionId) {
           credits: account.credits,
           creditsTotal: account.creditsTotal,
           used: account.used || 0,
+          todayCredits: round2(state.daily.qoder.get(account.uid) || 0),
           cooling: account.cooling,
           disabled: account.disabled,
           lastSuccess: account.lastSuccess,
@@ -1684,7 +1895,7 @@ function buildPayload(state, ledger, opts, sessionId) {
     },
     qoder,
     session,
-    activity: activityView(state, session),
+    activity: activityView(state, activitySessionId),
     lastSessionId: state.lastSessionId,
     generatedAt: new Date().toISOString(),
   }

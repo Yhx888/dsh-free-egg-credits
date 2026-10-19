@@ -18,12 +18,15 @@ sidebar, under the composer, at the end of every turn, and in a settings section
 ## Where it shows up
 
 - **Sidebar footer (above the account row)**: a credits block. Each row is
-  "status dot · account name · source badge (WB/Qoder) · balance". Check-in state is expressed only
-  by the leftmost dot (green = checked in today); rate-limit / degrade / failure streaks appear as
-  badges with a recovery time. Hidden while the sidebar is collapsed.
-  The account currently consuming credits is highlighted with a **gray selection-style background**:
-  when something was consumed within the last two minutes and the current conversation is on a
-  free-egg model, its row gets the gray background. No extra row or top banner is added.
+  "status dot · account name · source badge (WB/Qoder) · today's usage · balance". Check-in state is
+  expressed only by the leftmost dot (green = checked in today); rate-limit / degrade / failure
+  streaks appear as badges with a recovery time. Hidden while the sidebar is collapsed.
+  **The highlight is pinned per foreground conversation**: each session gets one serving account
+  after its first reply and keeps it (switching conversations only switches the highlighted row —
+  it never jumps around with the globally latest request). The active row gets a **gray
+  selection-style background**, with no extra row or top banner. Each row also has a small
+  "today's usage" pill (down-arrow icon + credits): WorkBuddy from balance deltas, Qoder from its
+  usage ledger.
 - **Below the composer**: total estimated credits for the current conversation. As long as the
   conversation uses a model from a free-egg provider (by default `free-egg` / `workbuddy` / `qoder` /
   `new-api`), this strip stays visible — `≈0` before the first reply, and a “rate pending” hint when
@@ -135,7 +138,8 @@ Put this in the target profile's `cordis.patch.yml` (plugin id `free-egg-credits
 | WorkBuddy check-in | Once per day, on first UI open, a single-account check-in call (`POST /panel/api/accounts/{uid}/checkin`). Upstream returns `10001 already checked in` for repeats — idempotent, no side effects; if not checked in yet, it completes today's check-in |
 | Qoder credits | Qoder gateway `GET /credits/summary` (registered view: `credits_remain` / `credits_size`) |
 | Qoder check-in | Qoder gateway `GET /scheduler`: if the scheduler ran a check-in pass today, it counts as checked in; `next_run_time` is the next pass |
-| Live consuming account | WorkBuddy panel `token_usage.last_used_at` / `last_model`; Qoder panel `GET /usage/recent` latest row (`account` / `model` / `at`, cached for 3 s). After each reply the host waits 1.5 s then force-refreshes both gateways (coalescing multiple events of the same turn) for the sidebar's consuming-account highlight |
+| Session serving account | WorkBuddy panel `token_usage.last_used_at` / `last_model`; Qoder panel `GET /usage/recent` (`account` / `model` / `at`, cached for 3 s). After each reply the host waits 1.5 s, refreshes both gateways and matches the latest request to that session by timestamp; the first match is pinned and never switches |
+| Today's usage per account | WorkBuddy: sum of balance decreases between snapshots (the gateway deducts the upstream `credit` from account balance); the ledger is persisted to `<DSH_HOME>/free-egg-credits/daily.json` and continues across DSH restarts. Qoder: exact sum of `credit` over today's `/usage/recent` rows |
 | Tokens per turn | `assistant/message.usage` in DSH session events (folded on the host, never persisted) |
 | Credit rate (WorkBuddy measured) | `model_costs[].cost_per_1k` from gateway account state, weighted by sample count |
 | Credit rate (Qoder measured) | Qoder panel `GET /usage` `by_model` ledger: real `credit ÷ total_tokens` (includes cache-hit discounts); cached for 5 minutes |
@@ -153,9 +157,11 @@ The plugin has a host half and a client half:
   `POST /checkin`, `POST /qoder/checkin`). It reads gateway panels and model catalogs, decides
   check-in state, folds per-turn token usage from `session/event` plus the session log, tracks which
   provider each turn came from, and converts tokens to credits through three layers (measured rate →
-  catalog-multiplier estimate → config override). After each reply it force-refreshes WorkBuddy
-  `token_usage` and Qoder `/usage/recent` to maintain the latest consuming account for the sidebar's
-  row highlight. Keys, password and panel token only ever exist in this process.
+  catalog-multiplier estimate → config override). After each reply it refreshes WorkBuddy
+  `token_usage` and Qoder `/usage/recent`, attributes that request to the session by timestamp and
+  pins the first match (a session never switches accounts), and maintains per-account "today's
+  usage" (WorkBuddy balance deltas persisted across restarts; Qoder exact ledger sums) for the
+  sidebar. Keys, password and panel token only ever exist in this process.
 - **Client half (`client.js`)**: a hand-written `window.__ModuleLoader__` bundle that injects React
   components into `sidebar.footer.action`, `conversation.composer.dock`,
   `conversation.chat.turnTail` and `settings.section`. It only reads the same-origin endpoints
@@ -182,7 +188,8 @@ Please report security issues privately as described in [SECURITY.md](SECURITY.m
 ## Known limitations
 
 - Credits are estimates: actual charges during upstream free periods can be lower, hence the `≈`.
-- The "using now" account comes from the gateway's **write-back after a request completes**: it does not change during streaming and updates once the turn finishes (usually within seconds). If another client is using the same gateway concurrently, the box shows the globally latest request, which may not be this page's conversation.
+- The serving-account attribution comes from the gateway's **write-back after a request completes**: it does not change during streaming and updates once the turn finishes (usually within seconds). It is pinned per session, so two concurrent conversations keep their own accounts; if the very first match is wrong (two requests completing too close together), that session keeps the first result — the trade-off for never flip-flopping.
+- WorkBuddy's "today's usage" needs a balance baseline: the new host starts accumulating from the first balance it sees for that account, so on the very first day it may only count from when the host started (the gateway has no per-day credit API); once persisted, DSH restarts continue the ledger. Qoder's today usage is recomputed exactly from its usage ledger since local midnight.
 - Only conversations from free-egg providers (by default `free-egg` / `workbuddy` / `qoder` /
   `new-api`) are priced; other providers (e.g. the official DeepSeek account) only show tokens and
   `—` for credits, and the composer strip stays hidden.

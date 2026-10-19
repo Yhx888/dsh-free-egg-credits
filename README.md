@@ -16,10 +16,11 @@
 
 ## 界面落点
 
-- **侧边栏底部（账户行上方）**：账号积分区块。每行统一为「状态点 · 账号名 · 来源徽标（WB/Qoder） · 余额」，
+- **侧边栏底部（账户行上方）**：账号积分区块。每行统一为「状态点 · 账号名 · 来源徽标（WB/Qoder） · 今日消耗 · 余额」，
   签到状态只由最左侧状态点表达（绿色 = 今日已签到）；限流 / 降权 / 连败以徽标透出恢复时间。侧边栏收起时不占位。
-  正在消耗积分的账号行会加**灰色底框（选中态）**：2 分钟内且有新请求、当前对话又是 free-egg 模型时，
-  对应账号行整行变成选中样式的灰底；不额外占一行，也没有顶部提示框。
+  **选中逻辑按前台会话固定**：每个会话在首轮回复后固定一个承载账号，之后不再换号；切换前台会话只会切换
+  高亮行，不会跟着全局最近请求来回跳。正在消耗的账号行加**灰色底框（选中态）**，不额外占一行。
+  每行还有一个「今日消耗」小框（向下小箭头 + 积分）：WorkBuddy 按余额差值累计、Qoder 按用量台账精确累加。
 - **输入框下方**：当前对话累计消耗（`Free Egg · 本会话 ≈N 积分`）。只要当前对话用的是 free-egg provider
   （默认 `free-egg` / `workbuddy` / `qoder` / `new-api`）的模型，这条就常显——首轮回复前是 `≈0`，
   模型暂时没有单价时提示「等待单价」；换到其他 provider（如 DeepSeek 官方账号）的模型则不显示，避免误导。
@@ -123,7 +124,8 @@ New-Item -ItemType Junction `
 | WorkBuddy 签到状态 | 当天首次打开界面时调用一次单号签到接口（`POST /panel/api/accounts/{uid}/checkin`）。上游对重复签到返回 `10001 今天已签到`，幂等无副作用；未签到时顺带完成当天签到 |
 | Qoder 账号积分 | Qoder 网关 `GET /credits/summary`（registered 口径：`credits_remain` / `credits_size`） |
 | Qoder 签到状态 | Qoder 网关 `GET /scheduler`：调度器当天跑过巡检即视为「今日已签到」，`next_run_time` 为下次巡检 |
-| 实时消耗账号 | WorkBuddy 面板 `token_usage.last_used_at` / `last_model`；Qoder 面板 `GET /usage/recent` 最新一条（`account` / `model` / `at`，3 秒缓存）。每轮回复结束后 Host 侧延迟 1.5 秒强制拉一次两侧网关（合并同轮多条事件），供侧边栏高亮正在消耗的账号 |
+| 会话消耗账号 | WorkBuddy 面板 `token_usage.last_used_at` / `last_model`；Qoder 面板 `GET /usage/recent`（`account` / `model` / `at`，3 秒缓存）。每轮回复结束后 Host 侧延迟 1.5 秒刷新两侧网关，按事件时刻就近匹配到该会话；首次匹配后固定，不再换号 |
+| 账号当日消耗 | WorkBuddy：累加两次快照之间的余额下降量（网关按上游 `credit` 扣减账号余额），账本落盘 `<DSH_HOME>/free-egg-credits/daily.json`，重启 DSH 继续算；Qoder：当天 `/usage/recent` 台账的 `credit` 逐条累加（精确值） |
 | 每轮 token | DSH Session 事件里的 `assistant/message.usage`（Host 侧折叠，不落盘） |
 | 积分单价（WorkBuddy 实测） | 网关账号状态里的 `model_costs[].cost_per_1k`（按样本数加权） |
 | 积分单价（Qoder 实测） | Qoder 面板 `GET /usage` 的 `by_model` 台账：真实 `credit ÷ total_tokens`（含缓存命中折扣），5 分钟缓存 |
@@ -140,8 +142,9 @@ New-Item -ItemType Junction `
   下注册 5 个接口（`GET /snapshot`、`GET /sessions`、`POST /refresh`、`POST /checkin`、
   `POST /qoder/checkin`）。负责：读网关面板与模型目录、判定签到、用 `session/event` 与会话日志折叠每轮
   token 用量、按 provider 判断是否 free-egg 模型、按「实测单价 → 目录倍率折算 → 配置覆盖」折算积分；
-  并在每轮回复结束后强制刷新 WorkBuddy `token_usage` 与 Qoder `/usage/recent`，维护「最近消耗账号」
-  供侧边栏高亮正在消耗的那个账号。
+  并在每轮回复结束后刷新 WorkBuddy `token_usage` 与 Qoder `/usage/recent`，按事件时刻把这次消耗
+  归属并固定在对应会话（会话 → 账号不再来回切）；同时维护每个账号的「今日消耗」账本
+  （WorkBuddy 余额差值 + 落盘续算，Qoder 台账精确累加），供侧边栏展示。
   密钥、面板密码、token 全部只在这个进程内使用。
 - **Client 半（`client.js`）**：手写 `window.__ModuleLoader__` bundle，向 `sidebar.footer.action`、
   `conversation.composer.dock`、`conversation.chat.turnTail`、`settings.section` 四个席位注入 React 组件，
@@ -163,7 +166,8 @@ New-Item -ItemType Junction `
 ## 已知限制
 
 - 积分为折算值：上游限免时段实际扣费可能更低，所以界面统一带 `≈`。
-- 「消耗中」账号来自网关**最近一次请求完成后的回写**：流式生成期间不会变，要等这一轮结束才更新（通常数秒内）。若同一时间还有别的客户端在用同一个网关，显示的是全局最近一次消耗，不保证是本页面对话的那个账号。
+- 账号归属来自网关**请求完成后的回写**：流式生成期间不会变，要等这一轮结束才更新（通常数秒内）。归属按会话固定，两个并发会话各记各的账号；但如果首轮归属就匹配错（两个会话的请求完成时刻太接近），该会话会一直沿用第一次结果——这是「不来回切」的取舍。
+- WorkBuddy 的「当日消耗」需要先有余额基线：新版 Host 在某个账号上第一次看到余额后开始累计，首次运行当天可能只从运行时算起（网关没有按日积分接口）；账本落盘后重启 DSH 不会清零。Qoder 的当日消耗来自用量台账，可从当天 0 点起精确重算。
 - 只有 free-egg provider（默认 `free-egg` / `workbuddy` / `qoder` / `new-api`）的对话计积分；其他 provider（如 DeepSeek 官方账号）只显示 token、积分为 `—`，底栏也不显示。
 - 未实测模型的单价是**倍率折算的估算值**：两台网关各自用本机实测数据校准，换模型 / 上游调价后可能有偏差；配置 `creditsPer1k` 可精确覆盖。
 - Qoder 实测单价包含缓存命中的折扣（本项目实测一度有 98% 输入命中缓存），是「该模型近期实际平均」；同一模型换用法（缓存比例变化）会带来偏差。

@@ -3,6 +3,23 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.3.0] - 2026-10-19
+
+### 新增
+
+- **会话级消耗账号固定**：每个会话在首轮回复后把「承载账号」固定下来，之后不再换号；侧边栏高亮
+  跟着**前台会话**切换，不再跟随全局最近一次请求，两个会话并发时不会来回跳。
+- **每个账号的「今日消耗」**：账号行新增小图标 + 小框（向下箭头 + 积分）。WorkBuddy 用两次快照的
+  余额下降量累计（网关按上游 `credit` 扣减余额），账本落盘 `<DSH_HOME>/free-egg-credits/daily.json`，
+  重启 DSH 续算；Qoder 用当天 `/usage/recent` 台账逐条累加 `credit`（精确值）。
+- 设置页账号卡同步展示「今日消耗」。
+
+### 说明
+
+- 归属要等这一轮回复结束、网关完成用量回写后才更新（流式生成期间不变）。
+- WorkBuddy 的当日消耗从新版首次拿到余额基线后开始累计：网关没有按日积分接口，首次运行当天可能
+  只从运行时算起；账本落盘后重启 DSH 不会清零。
+
 ## [1.2.0] - 2026-10-19
 
 ### 新增
@@ -89,6 +106,7 @@
 - 积分是**折算值**：单价取自网关对上游 `usage.credit` 的实测台账，界面统一带 `≈`。
 - 两个网关都是外部依赖，不在本仓库内；未配置时对应来源不显示。
 
+[1.3.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.3.0
 [1.2.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.2.0
 [1.1.1]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.1.1
 [1.1.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.1.0
