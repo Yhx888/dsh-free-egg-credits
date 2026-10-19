@@ -498,7 +498,10 @@ window.__ModuleLoader__.load({
       '.wbcd-side-refresh:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}',
       '.wbcd-side-refresh:disabled{opacity:.45;cursor:default}',
       '.wbcd-side-row{display:flex;align-items:center;gap:6px;min-width:0;padding:0 4px;margin:0 -4px;border-radius:6px;transition:background-color .15s ease}',
-      '.wbcd-side-row.is-active{background:var(--dsw-alias-bg-layer-2)}',
+      '.wbcd-side-row.is-active{background:rgba(127,127,127,.18);box-shadow:inset 0 0 0 1px rgba(127,127,127,.12)}',
+      // 主题可能没有定义 bg-layer-2（会出现“只有加粗、没有灰底”），这里用不受主题影响的
+      // 中性灰半透明叠色，亮/暗主题都能看见。
+      '.wbcd-side-row.is-active{background:color-mix(in srgb,var(--dsw-alias-label-primary) 14%,transparent)}',
       '.wbcd-side-row.is-active .wbcd-side-name{color:var(--dsw-alias-label-primary);font-weight:500}',
       '.wbcd-side-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}',
       '.wbcd-side-credits{flex:none;color:var(--dsw-alias-label-primary);font-weight:500}',
