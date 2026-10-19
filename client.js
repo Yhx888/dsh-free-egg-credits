@@ -97,7 +97,7 @@ window.__ModuleLoader__.load({
       'budget.todayTitle': '今日已用 ≈{used} / 上限 {limit}（剩余 ≈{remaining}，本地时间 0 点起）',
       'budget.cappedTip': '今日已满额，已停用，明日 0 点恢复',
       'budget.aria': '今日已用 / 上限',
-      'budget.allCapped': '今日额度已用完：DeepSeek 暂停，可切 qwen3.8-flash（免费）',
+      'budget.allCapped': '今日额度已用完：DeepSeek 已自动降级到 Qwen3.8-Flash（免费）',
       'settings.todayBudget': '今日已用 ≈{used} / {limit}（剩余 ≈{remaining}）',
       'settings.capped': '今日已满额，账号已停用，明日 0 点恢复',
     }
@@ -176,7 +176,7 @@ window.__ModuleLoader__.load({
       'budget.todayTitle': '≈{used} of {limit} credits used today (≈{remaining} left, since local midnight)',
       'budget.cappedTip': 'Daily limit reached — account paused, resets at 00:00',
       'budget.aria': 'Used / daily limit',
-      'budget.allCapped': 'Daily credits used up: DeepSeek paused, switch to qwen3.8-flash (free)',
+      'budget.allCapped': 'Daily credits used up: DeepSeek falls back to Qwen3.8-Flash (free) automatically',
       'settings.todayBudget': '≈{used} of {limit} credits used today (≈{remaining} left)',
       'settings.capped': 'Daily limit reached — account paused, resets at 00:00',
     }
@@ -945,7 +945,7 @@ window.__ModuleLoader__.load({
           ? h(
               'div',
               { className: 'wbcd-side-allcapped' },
-              translateWith(props.t, 'budget.allCapped', '今日额度已用完：DeepSeek 暂停，可切 qwen3.8-flash（免费）'),
+              translateWith(props.t, 'budget.allCapped', '今日额度已用完：DeepSeek 已自动降级到 Qwen3.8-Flash（免费）'),
             )
           : null,
       )
@@ -1287,7 +1287,7 @@ window.__ModuleLoader__.load({
           ? h(
               'div',
               { className: 'wbcd-notice wbcd-bad' },
-              tr('budget.allCapped', '今日额度已用完：DeepSeek 暂停，可切 qwen3.8-flash（免费）'),
+              tr('budget.allCapped', '今日额度已用完：DeepSeek 已自动降级到 Qwen3.8-Flash（免费）'),
             )
           : null,
         h(

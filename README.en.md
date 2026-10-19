@@ -153,9 +153,9 @@ Once enabled:
   paths reject it and let the caller re-select);
 - Within one gateway the **highest-balance** account is used first, until it hits its limit and is
   skipped;
-- After all four accounts (2 WorkBuddy + 2 Qoder) are capped, DeepSeek requests are paused (the
-  gateway returns an error); Qoder's free models (`price_factor = 0`, e.g. `qwen3.8-flash`) are not
-  subject to the daily credit quota and keep working.
+- After all four accounts (2 WorkBuddy + 2 Qoder) are capped, new-api's `qwen-fallback` channel
+  automatically downgrades DeepSeek requests to Qwen3.8-Flash (free); traffic returns to DeepSeek
+  as soon as WorkBuddy/Qoder has budget again.
 
 What the plugin shows:
 
@@ -165,7 +165,7 @@ What the plugin shows:
 - The settings card shows "≈X of 100 credits used today (≈Y left)" plus a cap notice line.
 - When **all** accounts in one snapshot (WorkBuddy + Qoder combined, at least one) are capped, both
   the top of the settings page and the sidebar block add one line:
-  "Daily credits used up: DeepSeek paused, switch to qwen3.8-flash (free)".
+  "Daily credits used up: DeepSeek falls back to Qwen3.8-Flash (free) automatically".
 
 > Old gateways without the daily-budget fields, or a failed Qoder `/accounts` read, make the plugin
 > fall back to the previous "today's usage" rendering (Qoder keeps the last successfully fetched

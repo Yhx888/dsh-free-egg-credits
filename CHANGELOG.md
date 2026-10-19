@@ -13,7 +13,7 @@
     满额时小框用宿主警示色，tooltip 明确「今日已满额，已停用，明日 0 点恢复」。
   - 设置页账号卡增加「今日已用 ≈X / 100（剩余 ≈Y）」；满额时多一行停用提示。
   - 一次快照里所有账号（WorkBuddy + Qoder 合计，至少一个）都满额时，设置页顶部与侧边栏
-    账号区块各给一行「今日额度已用完：DeepSeek 暂停，可切 qwen3.8-flash（免费）」。
+    账号区块各给一行「今日额度已用完：DeepSeek 已自动降级到 Qwen3.8-Flash（免费）」。
 - Host 侧映射统一字段：WorkBuddy `overview` 的 `daily_credit_spent` / `daily_credit_limit` /
   `daily_credit_capped`；Qoder 面板 `GET /accounts`（面板 token 已封装）的 `dailyCreditsToday` /
   `dailyCreditLimit` / `creditLimitReached`，与 `/credits/summary` 并进同一次刷新（保留 60 秒缓存）。
@@ -22,7 +22,8 @@
 ### 说明
 
 - 预算逻辑与选号在网关侧（WorkBuddy `pool.daily_credit_limit` + `prefer_credits`；Qoder 面板
-  「每日积分限额」）；插件只读展示，不参与限流/换号。
+  「每日积分限额」）；插件只读展示，不参与限流/换号。四个账号都满额后由 new-api 的
+  `qwen-fallback` 渠道把 DeepSeek 自动降级到 Qwen3.8-Flash（免费），恢复额度后自动回到 DeepSeek。
 - 兼容旧网关 / Qoder 面板失败：字段缺失时保持 undefined/0/false，界面回落 1.3.0 的
   「今日消耗」样式；Qoder `/accounts` 失败只让预算字段缺省并沿用上一次成功值，不影响积分刷新。
 - Host 半改动需重启 DSH 生效；Client 半刷新页面即可。

@@ -133,8 +133,8 @@ New-Item -ItemType Junction `
 - 账号当天累计消耗达到上限（WorkBuddy `daily_credit_spent >= daily_credit_limit`；Qoder
   `creditLimitReached = true`）后，网关不再把新请求分给该账号（粘性会话路径也会拒绝并让上层重新选号）；
 - 同一网关内优先使用**余额最高**的账号，直到它达上限被跳过；
-- 四个账号（WorkBuddy 2 + Qoder 2）都满额后，DeepSeek 请求暂停（网关返回错误）；Qoder 的免费
-  模型（`price_factor = 0`，如 `qwen3.8-flash`）不受每日积分配额限制，仍可继续使用。
+- 四个账号（WorkBuddy 2 + Qoder 2）都满额后，new-api 的 `qwen-fallback` 渠道会把 DeepSeek 请求
+  自动降级到 Qwen3.8-Flash（免费）继续跑；WB/Qoder 恢复额度后自动回到 DeepSeek。
 
 插件侧的展示：
 
@@ -142,7 +142,7 @@ New-Item -ItemType Junction `
   tooltip 明确「今日已满额，已停用，明日 0 点恢复」；未启用预算时仍是原来的「≈N 积分」。
 - 设置页账号卡显示「今日已用 ≈X / 100（剩余 ≈Y）」，满额时多一行提示。
 - 一次快照里**所有**账号（WorkBuddy + Qoder 合计，至少一个）都满额时，设置页顶部与侧边栏
-  各给一行提示：「今日额度已用完：DeepSeek 暂停，可切 qwen3.8-flash（免费）」。
+  各给一行提示：「今日额度已用完：DeepSeek 已自动降级到 Qwen3.8-Flash（免费）」。
 
 > 旧网关没有每日预算字段，或 Qoder 面板 `/accounts` 读取失败时，插件自动回落到旧的「今日消耗」
 > 展示（Qoder 会沿用上一次成功拿到的预算值），不会让整次刷新失败。
