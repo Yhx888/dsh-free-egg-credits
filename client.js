@@ -15,7 +15,9 @@ window.__ModuleLoader__.load({
 
     const NS = 'free-egg-credits'
     const API = '/__dsh-wb-credits'
-    const POLL_MS = 15_000
+    // 快照轮询：侧边栏要「实时」显示哪个账号在消耗，5 秒内能跟上每轮对话；
+    // 页面隐藏时跳过（服务端刷新本身按 refreshSeconds 节流）。
+    const POLL_MS = 5_000
 
     // -----------------------------------------------------------------------
     // 文案（不依赖 Host 的语言包，索引键相同；缺 t 时直接回落中文）
@@ -25,6 +27,10 @@ window.__ModuleLoader__.load({
       'section.title': 'Free Egg 积分',
       'section.desc': 'DeepSeek / Qwen 各上游账号的可用积分、每日签到状态，以及每条对话消耗的积分。',
       'sidebar.title': 'Free Egg 积分',
+      'sidebar.active': '消耗中',
+      'sidebar.recent': '最近消耗',
+      'sidebar.live': '正在消耗积分',
+      'sidebar.last': '最近一次消耗',
       'dock.label': 'Free Egg',
       'dock.loading': 'WorkBuddy 积分读取中…',
       'dock.error': 'WorkBuddy 网关未连接',
@@ -94,6 +100,10 @@ window.__ModuleLoader__.load({
       'section.title': 'Free Tier Credits',
       'section.desc': 'Credits and daily check-in state across DeepSeek / Qwen upstream accounts, plus credits per conversation.',
       'sidebar.title': 'Free Tier Credits',
+      'sidebar.active': 'Using now',
+      'sidebar.recent': 'Last used',
+      'sidebar.live': 'Using credits now',
+      'sidebar.last': 'Last credit use',
       'dock.label': 'Free Egg',
       'dock.loading': 'Reading WorkBuddy credits…',
       'dock.error': 'WorkBuddy gateway unreachable',
@@ -495,7 +505,14 @@ window.__ModuleLoader__.load({
       '.wbcd-side-refresh{border:none;background:transparent;color:var(--dsw-alias-label-secondary);padding:2px;border-radius:4px;cursor:pointer;display:inline-flex;line-height:0;flex:none}',
       '.wbcd-side-refresh:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}',
       '.wbcd-side-refresh:disabled{opacity:.45;cursor:default}',
-      '.wbcd-side-row{display:flex;align-items:center;gap:6px;min-width:0}',
+      '.wbcd-side-row{display:flex;align-items:center;gap:6px;min-width:0;padding:0 4px;margin:0 -4px;border-radius:6px}',
+      '.wbcd-side-row.is-active{background:var(--dsw-alias-bg-layer-2)}',
+      '.wbcd-side-active{display:flex;align-items:center;gap:5px;min-width:0;margin:0 0 2px;padding:2px 6px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}',
+      '.wbcd-side-active-dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-label-secondary);opacity:.6;flex:none}',
+      '.wbcd-side-active.is-live .wbcd-side-active-dot{background:var(--dsw-alias-state-success-primary);opacity:1}',
+      '.wbcd-side-active-label{flex:none;font-weight:600;color:var(--dsw-alias-label-primary)}',
+      '.wbcd-side-active-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary)}',
+      '.wbcd-side-active-meta{margin-left:auto;flex:none;font-size:10px;line-height:14px;color:var(--dsw-alias-label-secondary)}',
       '.wbcd-side-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}',
       '.wbcd-side-credits{flex:none;color:var(--dsw-alias-label-primary);font-weight:500}',
       '.wbcd-side-badge{flex:none;font-size:10px;line-height:14px;padding:0 4px;border-radius:4px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1);font-weight:500}',
@@ -748,6 +765,35 @@ window.__ModuleLoader__.load({
         ...accounts.map(account => ({ key: account.uid, account, source: 'workbuddy' })),
         ...qoderAccounts.map(account => ({ key: 'qoder-' + account.uid, account, source: 'qoder' })),
       ]
+      // 实时消耗归属：Host 从两个网关的「最近一次请求」里挑最新的一条。
+      const activity = data.activity && typeof data.activity === 'object' ? data.activity : null
+      const activitySource = activity ? (activity.source === 'qoder' ? 'Qoder' : 'WB') : ''
+      const activityName = activity
+        ? String(activity.nickname || '') || String(activity.uid || '').slice(0, 8)
+        : ''
+      const activityModel = activity && activity.model ? trimModel(activity.model) : ''
+      const activityTime = activity ? shortTime(activity.at) : ''
+      // 行 key 与 activity.uid 对齐（Qoder 行 key 带 'qoder-' 前缀）
+      const activeKey =
+        activity && activity.active
+          ? activity.source === 'qoder'
+            ? 'qoder-' + activity.uid
+            : String(activity.uid || '')
+          : ''
+      const activityTitle = activity
+        ? [
+            translateWith(
+              props.t,
+              activity.active ? 'sidebar.live' : 'sidebar.last',
+              activity.active ? '正在消耗积分' : '最近一次消耗',
+            ),
+            activityName + (activityModel ? ' · ' + activityModel : ''),
+            activitySource,
+            activity.active ? '' : activityTime,
+          ]
+            .filter(Boolean)
+            .join(' · ')
+        : ''
 
       return h(
         'div',
@@ -770,6 +816,26 @@ window.__ModuleLoader__.load({
             h(RefreshIcon),
           ),
         ),
+        activity
+          ? h(
+              'div',
+              { className: 'wbcd-side-active' + (activity.active ? ' is-live' : ''), title: activityTitle },
+              h('span', { className: 'wbcd-side-active-dot' }),
+              h(
+                'span',
+                { className: 'wbcd-side-active-label' },
+                activity.active
+                  ? translateWith(props.t, 'sidebar.active', '消耗中')
+                  : translateWith(props.t, 'sidebar.recent', '最近消耗'),
+              ),
+              h('span', { className: 'wbcd-side-active-name' }, activityName || '—'),
+              h(
+                'span',
+                { className: 'wbcd-side-active-meta' },
+                activitySource + (activity.active || !activityTime ? '' : ' · ' + activityTime),
+              ),
+            )
+          : null,
         ...rows.map(({ key, account, source }) => {
           const limitMs = limitResetMs(account)
           const limited = source === 'workbuddy' && rateLimitRows(account).length > 0
@@ -794,7 +860,7 @@ window.__ModuleLoader__.load({
           const flagText = (label, ms) => label + (ms ? ' ' + formatShortRecover(ms) : '')
           return h(
             'div',
-            { key, className: 'wbcd-side-row', title },
+            { key, className: 'wbcd-side-row' + (key === activeKey ? ' is-active' : ''), title },
             h('span', { className: 'wbcd-dot wbcd-' + visual.state }),
             h('span', { className: 'wbcd-side-name' }, accountName(account)),
             h('span', { className: 'wbcd-side-badge' }, source === 'qoder' ? 'Qoder' : 'WB'),

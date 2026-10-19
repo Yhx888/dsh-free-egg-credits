@@ -3,6 +3,23 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.0] - 2026-10-19
+
+### 新增
+
+- **侧边栏实时消耗账号**：侧边栏积分区块顶部新增灰色底框，实时显示最近一次消耗落在哪个账号
+  （WorkBuddy / Qoder 徽标，悬停看模型与时间），对应的账号行同步加灰色底；2 分钟内有新请求且
+  当前对话使用 free-egg 模型时标「消耗中」，否则显示「最近消耗 · HH:mm」。
+- 消耗归属来自两个网关的请求完成回写：WorkBuddy 面板 `token_usage.last_used_at`，
+  Qoder 面板 `GET /usage/recent`（3 秒缓存）；一轮回复结束后 Host 侧延迟 1.5 秒强制拉一次网关，
+  合并同一轮的多条事件。
+- 客户端快照轮询从 15 秒收紧到 5 秒，「实时」感更强（页面隐藏时跳过）。
+
+### 说明
+
+- 流式回复期间网关还没记录该次请求，归属要等这一轮结束才更新（通常回复结束后数秒内）；
+  更早的历史请求不参与判定，只看两侧最近一次。
+
 ## [1.1.2] - 2026-10-18
 
 ### 修复
@@ -73,6 +90,7 @@
 - 积分是**折算值**：单价取自网关对上游 `usage.credit` 的实测台账，界面统一带 `≈`。
 - 两个网关都是外部依赖，不在本仓库内；未配置时对应来源不显示。
 
+[1.2.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.2.0
 [1.1.1]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.1.1
 [1.1.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.0.0

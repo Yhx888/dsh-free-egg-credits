@@ -56,6 +56,25 @@ export function apply(ctx, rawConfig = {}) {
   const ledger = createLedger(ctx, log)
   const checkin = createCheckin(opts, gateway, state, log)
 
+  // 一轮结束后的「消耗归属」刷新：合并 1.5 秒内的多条事件，避免每个事件都打网关。
+  let activityTimer = null
+  function scheduleActivityRefresh() {
+    if (activityTimer !== null) return
+    activityTimer = setTimeout(() => {
+      activityTimer = null
+      // 强制拉一次网关：WorkBuddy 面板的 token_usage 与 Qoder /usage/recent 都
+      // 在请求完成时回写，这一拍之后侧边栏就能看到是哪个账号在消耗。
+      refresh(true).catch(() => {})
+      refreshQoderActivity(state, qoderGateway, log, true).catch(() => {})
+    }, 1500)
+    // Node 侧定时器不阻塞进程退出（DSH reload 时也无副作用）
+    if (typeof activityTimer.unref === 'function') activityTimer.unref()
+  }
+  ctx.effect(() => () => {
+    if (activityTimer !== null) clearTimeout(activityTimer)
+    activityTimer = null
+  })
+
   // 会话事件：逐轮累计 token；同时记住最近活跃会话供设置页展示。
   ctx.on('session/event', (session, event) => {
     const id = session && typeof session.id === 'string' ? session.id : ''
@@ -63,6 +82,7 @@ export function apply(ctx, rawConfig = {}) {
     // 子代理会话不参与「最近活跃对话」的时间线，只进账本（被问到才展示）。
     if (!session.header || session.header.origin !== 'subagent') state.lastSessionId = id
     ledger.note(id, event)
+    if (event && event.type === 'assistant/message') scheduleActivityRefresh()
   })
 
   const route = (path, handler) => {
@@ -92,6 +112,7 @@ export function apply(ctx, rawConfig = {}) {
     const url = new URL(req.url || '/', 'http://localhost')
     const sessionId = url.searchParams.get('sessionId') || state.lastSessionId || ''
     await refresh(false)
+    await refreshQoderActivity(state, qoderGateway, log, false)
     await checkin.maybeAuto(6000)
     if (sessionId) await ledger.ensure(sessionId)
     sendJson(res, 200, buildPayload(state, ledger, opts, sessionId))
@@ -118,6 +139,7 @@ export function apply(ctx, rawConfig = {}) {
     }
     state.recentCache = null
     await refresh(true)
+    await refreshQoderActivity(state, qoderGateway, log, true)
     await checkin.maybeAuto(8000)
     sendJson(res, 200, { ok: true, online: state.online, error: state.error })
   }
@@ -470,6 +492,8 @@ function createQoderGateway(opts, log) {
     },
     // 实测用量台账（按模型聚合 credit / total_tokens）：面板接口，需 panel token。
     usage: () => request('/usage'),
+    // 逐条用量台账（page 1 最新在前）：取最新一条即可知道最后哪个账号在跑。
+    recent: (limit = 3) => request(`/usage/recent?limit=${encodeURIComponent(limit)}`, { timeoutMs: 4000 }),
     // 手动签到（设置页按钮用）；调度器每日 09/21 自动跑，这里只是手动补
     checkin: async () => request('/accounts/checkin', { method: 'POST', timeoutMs: 300000 }),
     accounts: () => request('/accounts'),
@@ -480,7 +504,8 @@ function createQoderGateway(opts, log) {
 
 /**
  * Qoder 调度器状态 → 与 WorkBuddy 同形的签到记录。
- * 网关调度器每日 09:00/21:00 巡检签到；当天跑过即视为「今日已签到」。
+ * 网关调度器每日多次巡检签到（默认 09:00/21:00，本机加装了 10:05 窗口）；
+ * 当天跑过即视为「今日已签到」。
  */
 function qoderCheckinView(scheduler) {
   if (!scheduler || typeof scheduler !== 'object') return null
@@ -618,6 +643,51 @@ async function refreshQoder(state, gateway, opts, log) {
   }
 }
 
+/** Qoder 最近用量台账的轮询缓存：3 秒内的重复快照不再打面板。 */
+const QODER_ACTIVITY_TTL_MS = 3_000
+/** 面板不可用时的退避：别每 3 秒刷一次失败日志。 */
+const QODER_ACTIVITY_RETRY_MS = 12_000
+
+/**
+ * 刷新 Qoder「最近一次消耗」：/usage/recent 的 page 1 最新在前，
+ * 取第一条带 account 的成功台账（按请求完成时写入，正好对应一轮回复结束）。
+ */
+async function refreshQoderActivity(state, qoderGateway, log, force) {
+  if (!qoderGateway || !qoderGateway.enabled) return
+  if (!state.qoder || !state.qoder.enabled) return
+  // 网关离线时不做无谓的面板请求（refreshQoder 已标记 online=false）
+  if (state.qoder.online === false) return
+  const now = Date.now()
+  const fetchedAt = state.activity.qoderFetchedAt || 0
+  if (!force) {
+    if (fetchedAt && now - fetchedAt < QODER_ACTIVITY_TTL_MS) return
+    if (fetchedAt > now) return   // 失败退避期内
+  }
+  state.activity.qoderFetchedAt = now
+  try {
+    const payload = await qoderGateway.recent(3)
+    const rows = Array.isArray(payload?.rows) ? payload.rows : []
+    const latest = rows.find(row => row && !row.error && typeof row.account === 'string' && row.account)
+    if (!latest) return
+    const at = Number(latest.at) * 1000
+    if (!Number.isFinite(at) || at <= 0) return
+    const known = Array.isArray(state.qoder.accounts)
+      ? state.qoder.accounts.find(account => account.uid === latest.account)
+      : null
+    state.activity.qoder = {
+      at,
+      source: 'qoder',
+      uid: String(latest.account),
+      nickname: known ? known.nickname : String(latest.account).slice(0, 8),
+      model: stripRealm(latest.model || ''),
+    }
+  } catch (error) {
+    state.activity.qoderFetchedAt = now + QODER_ACTIVITY_RETRY_MS
+    log('读取 Qoder 最近用量失败', error)
+  }
+}
+
+
 // ---------------------------------------------------------------------------
 // 快照状态
 // ---------------------------------------------------------------------------
@@ -642,6 +712,10 @@ function createState() {
     lastSessionId: '',
     recentCache: null,
     qoder: null,
+    // 实时消耗归属：最近一次上游请求落在哪个账号（跨 WorkBuddy / Qoder）。
+    // WorkBuddy 取 /panel/api/overview 的 token_usage.last_used_at（面板实时回写）；
+    // Qoder 取面板 /usage/recent 的最新一条成功台账（3 秒缓存）。
+    activity: { workbuddy: null, qoder: null, qoderFetchedAt: 0 },
     // 网关模型目录（倍率 / price_factor），用于给未实测模型估价
     models: { workbuddy: [], qoder: [], workbuddyAt: 0, qoderAt: 0, fetching: null },
     // Qoder 实测用量台账（按模型 credit / total_tokens）
@@ -797,6 +871,11 @@ function applyOverview(state, overview, opts) {
       // 连败降权截止（零值/已过时由展示侧过滤）
       degradeUntil: normalizeTimestamp(account.degrade_until),
       consecutiveFails: toNumber(account.consecutive_fails),
+      // 账号最近一次上游请求（面板随每次调用回写）：用于侧边栏「哪个账号在消耗」。
+      tokenUsage: {
+        lastUsedAt: normalizeTimestamp(account.token_usage?.last_used_at),
+        lastModel: typeof account.token_usage?.last_model === 'string' ? account.token_usage.last_model : '',
+      },
       modelCosts: Array.isArray(account.model_costs)
         ? account.model_costs
             .filter(row => row && row.model)
@@ -815,7 +894,31 @@ function applyOverview(state, overview, opts) {
     disabled: toNumber(overview?.disabled),
   }
   state.version = typeof overview?.version === 'string' ? overview.version : ''
+  noteWorkbuddyActivity(state)
   buildPrice(state, opts)
+}
+
+/**
+ * 从账号列表折算「最近一次消耗」：token_usage.last_used_at 最新的账号即最后被网关
+ * 选中的号（池轮换时只有被调用的账号会更新自己的最后使用时间）。
+ */
+function noteWorkbuddyActivity(state) {
+  let latest = null
+  for (const account of state.accounts) {
+    const usage = account.tokenUsage
+    if (!usage || !usage.lastUsedAt) continue
+    const at = Date.parse(usage.lastUsedAt)
+    if (!Number.isFinite(at) || at <= 0) continue
+    if (latest && at <= latest.at) continue
+    latest = {
+      at,
+      source: 'workbuddy',
+      uid: account.uid,
+      nickname: account.nickname,
+      model: stripRealm(usage.lastModel),
+    }
+  }
+  if (latest) state.activity.workbuddy = latest
 }
 
 /**
@@ -1491,6 +1594,34 @@ function sessionView(state, ledger, sessionId) {
   }
 }
 
+/** 「正在消耗」判定窗口：最近一次请求距今 2 分钟内，且当前对话是 free-egg 模型。 */
+const ACTIVITY_WINDOW_MS = 120_000
+
+/**
+ * 侧边栏「哪个账号在消耗」视图：取 WorkBuddy / Qoder 两侧最近一次请求中较新的那条。
+ * active 需要同时满足：2 分钟以内 + 当前对话用 free-egg provider（否则只是「最近消耗」）。
+ */
+function activityView(state, session) {
+  const activity = state.activity || {}
+  let best = null
+  for (const item of [activity.workbuddy, activity.qoder]) {
+    if (!item || !item.at) continue
+    if (!best || item.at > best.at) best = item
+  }
+  if (!best) return null
+  const ageMs = Math.max(0, Date.now() - best.at)
+  const freeEgg = !session || session.freeEgg === true
+  return {
+    source: best.source,
+    uid: best.uid || '',
+    nickname: best.nickname || '',
+    model: best.model || '',
+    at: new Date(best.at).toISOString(),
+    ageSeconds: Math.round(ageMs / 1000),
+    active: ageMs <= ACTIVITY_WINDOW_MS && freeEgg,
+  }
+}
+
 function buildPayload(state, ledger, opts, sessionId) {
   const accounts = state.accounts.map(account => ({
     uid: account.uid,
@@ -1530,6 +1661,7 @@ function buildPayload(state, ledger, opts, sessionId) {
         })),
       }
     : { enabled: false }
+  const session = sessionView(state, ledger, sessionId)
   return {
     ok: true,
     gateway: {
@@ -1551,7 +1683,8 @@ function buildPayload(state, ledger, opts, sessionId) {
       autoCheckin: opts.autoCheckin,
     },
     qoder,
-    session: sessionView(state, ledger, sessionId),
+    session,
+    activity: activityView(state, session),
     lastSessionId: state.lastSessionId,
     generatedAt: new Date().toISOString(),
   }
