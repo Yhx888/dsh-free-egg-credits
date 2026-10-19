@@ -18,9 +18,8 @@
 
 - **侧边栏底部（账户行上方）**：账号积分区块。每行统一为「状态点 · 账号名 · 来源徽标（WB/Qoder） · 余额」，
   签到状态只由最左侧状态点表达（绿色 = 今日已签到）；限流 / 降权 / 连败以徽标透出恢复时间。侧边栏收起时不占位。
-  区块顶部有一行**灰色底框**：实时显示最近一次消耗落在哪个账号（来源徽标 + 悬停看模型），
-  2 分钟内且有新请求、当前对话又是 free-egg 模型时标「消耗中」，否则标「最近消耗 · 时间」；
-  对应的账号行同步加灰底高亮。
+  正在消耗积分的账号行会加**灰色底框（选中态）**：2 分钟内且有新请求、当前对话又是 free-egg 模型时，
+  对应账号行整行变成选中样式的灰底；不额外占一行，也没有顶部提示框。
 - **输入框下方**：当前对话累计消耗（`Free Egg · 本会话 ≈N 积分`）。只要当前对话用的是 free-egg provider
   （默认 `free-egg` / `workbuddy` / `qoder` / `new-api`）的模型，这条就常显——首轮回复前是 `≈0`，
   模型暂时没有单价时提示「等待单价」；换到其他 provider（如 DeepSeek 官方账号）的模型则不显示，避免误导。
@@ -124,7 +123,7 @@ New-Item -ItemType Junction `
 | WorkBuddy 签到状态 | 当天首次打开界面时调用一次单号签到接口（`POST /panel/api/accounts/{uid}/checkin`）。上游对重复签到返回 `10001 今天已签到`，幂等无副作用；未签到时顺带完成当天签到 |
 | Qoder 账号积分 | Qoder 网关 `GET /credits/summary`（registered 口径：`credits_remain` / `credits_size`） |
 | Qoder 签到状态 | Qoder 网关 `GET /scheduler`：调度器当天跑过巡检即视为「今日已签到」，`next_run_time` 为下次巡检 |
-| 实时消耗账号 | WorkBuddy 面板 `token_usage.last_used_at` / `last_model`；Qoder 面板 `GET /usage/recent` 最新一条（`account` / `model` / `at`，3 秒缓存）。每轮回复结束后 Host 侧延迟 1.5 秒强制拉一次两侧网关（合并同轮多条事件），供侧边栏灰色底框显示 |
+| 实时消耗账号 | WorkBuddy 面板 `token_usage.last_used_at` / `last_model`；Qoder 面板 `GET /usage/recent` 最新一条（`account` / `model` / `at`，3 秒缓存）。每轮回复结束后 Host 侧延迟 1.5 秒强制拉一次两侧网关（合并同轮多条事件），供侧边栏高亮正在消耗的账号 |
 | 每轮 token | DSH Session 事件里的 `assistant/message.usage`（Host 侧折叠，不落盘） |
 | 积分单价（WorkBuddy 实测） | 网关账号状态里的 `model_costs[].cost_per_1k`（按样本数加权） |
 | 积分单价（Qoder 实测） | Qoder 面板 `GET /usage` 的 `by_model` 台账：真实 `credit ÷ total_tokens`（含缓存命中折扣），5 分钟缓存 |
@@ -142,7 +141,7 @@ New-Item -ItemType Junction `
   `POST /qoder/checkin`）。负责：读网关面板与模型目录、判定签到、用 `session/event` 与会话日志折叠每轮
   token 用量、按 provider 判断是否 free-egg 模型、按「实测单价 → 目录倍率折算 → 配置覆盖」折算积分；
   并在每轮回复结束后强制刷新 WorkBuddy `token_usage` 与 Qoder `/usage/recent`，维护「最近消耗账号」
-  供侧边栏灰色底框展示。
+  供侧边栏高亮正在消耗的那个账号。
   密钥、面板密码、token 全部只在这个进程内使用。
 - **Client 半（`client.js`）**：手写 `window.__ModuleLoader__` bundle，向 `sidebar.footer.action`、
   `conversation.composer.dock`、`conversation.chat.turnTail`、`settings.section` 四个席位注入 React 组件，

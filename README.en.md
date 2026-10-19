@@ -21,10 +21,9 @@ sidebar, under the composer, at the end of every turn, and in a settings section
   "status dot · account name · source badge (WB/Qoder) · balance". Check-in state is expressed only
   by the leftmost dot (green = checked in today); rate-limit / degrade / failure streaks appear as
   badges with a recovery time. Hidden while the sidebar is collapsed.
-  At the top of the block a **gray box** shows the account of the latest credit-consuming request in
-  real time (source badge; hover for model): it reads "Using now" when something was consumed within
-  the last two minutes and the current conversation is on a free-egg model, otherwise
-  "Last used · HH:mm". The matching account row is highlighted with the same gray background.
+  The account currently consuming credits is highlighted with a **gray selection-style background**:
+  when something was consumed within the last two minutes and the current conversation is on a
+  free-egg model, its row gets the gray background. No extra row or top banner is added.
 - **Below the composer**: total estimated credits for the current conversation. As long as the
   conversation uses a model from a free-egg provider (by default `free-egg` / `workbuddy` / `qoder` /
   `new-api`), this strip stays visible — `≈0` before the first reply, and a “rate pending” hint when
@@ -136,7 +135,7 @@ Put this in the target profile's `cordis.patch.yml` (plugin id `free-egg-credits
 | WorkBuddy check-in | Once per day, on first UI open, a single-account check-in call (`POST /panel/api/accounts/{uid}/checkin`). Upstream returns `10001 already checked in` for repeats — idempotent, no side effects; if not checked in yet, it completes today's check-in |
 | Qoder credits | Qoder gateway `GET /credits/summary` (registered view: `credits_remain` / `credits_size`) |
 | Qoder check-in | Qoder gateway `GET /scheduler`: if the scheduler ran a check-in pass today, it counts as checked in; `next_run_time` is the next pass |
-| Live consuming account | WorkBuddy panel `token_usage.last_used_at` / `last_model`; Qoder panel `GET /usage/recent` latest row (`account` / `model` / `at`, cached for 3 s). After each reply the host waits 1.5 s then force-refreshes both gateways (coalescing multiple events of the same turn) for the sidebar's gray box |
+| Live consuming account | WorkBuddy panel `token_usage.last_used_at` / `last_model`; Qoder panel `GET /usage/recent` latest row (`account` / `model` / `at`, cached for 3 s). After each reply the host waits 1.5 s then force-refreshes both gateways (coalescing multiple events of the same turn) for the sidebar's consuming-account highlight |
 | Tokens per turn | `assistant/message.usage` in DSH session events (folded on the host, never persisted) |
 | Credit rate (WorkBuddy measured) | `model_costs[].cost_per_1k` from gateway account state, weighted by sample count |
 | Credit rate (Qoder measured) | Qoder panel `GET /usage` `by_model` ledger: real `credit ÷ total_tokens` (includes cache-hit discounts); cached for 5 minutes |
@@ -156,7 +155,7 @@ The plugin has a host half and a client half:
   provider each turn came from, and converts tokens to credits through three layers (measured rate →
   catalog-multiplier estimate → config override). After each reply it force-refreshes WorkBuddy
   `token_usage` and Qoder `/usage/recent` to maintain the latest consuming account for the sidebar's
-  gray box. Keys, password and panel token only ever exist in this process.
+  row highlight. Keys, password and panel token only ever exist in this process.
 - **Client half (`client.js`)**: a hand-written `window.__ModuleLoader__` bundle that injects React
   components into `sidebar.footer.action`, `conversation.composer.dock`,
   `conversation.chat.turnTail` and `settings.section`. It only reads the same-origin endpoints
