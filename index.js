@@ -401,6 +401,16 @@ function toNumber(value, fallback = 0) {
 }
 
 /**
+ * 可选数字：每日预算字段在旧网关 / Qoder best-effort 接口里可能缺失。
+ * 缺失时保持 undefined（而不是 0），展示侧才能回落到旧的「今日消耗」口径。
+ */
+function optionalNumber(value) {
+  if (value === null || value === undefined || value === '') return undefined
+  const number = Number(value)
+  return Number.isFinite(number) ? number : undefined
+}
+
+/**
  * 网关时间字段归一：Go 的 time.Time 零值经 omitempty 仍会序列化成
  * "0001-01-01T00:00:00Z"（omitempty 对结构体无效），不能当有效时刻；早于 1970 的
  * 一律视为缺失，让调用侧回落（限流缺 reset_at 时用 until）。非法字符串同样归空。
@@ -677,7 +687,7 @@ async function refreshQoder(state, gateway, opts, log) {
   const needUsage = !state.usage.qoderAt || now - state.usage.qoderAt > USAGE_TTL_MS
   const work = (async () => {
     try {
-      const [summary, scheduler, catalog, usage] = await Promise.all([
+      const [summary, scheduler, catalog, usage, panel] = await Promise.all([
         qoder.credits(),
         qoder.scheduler().catch(() => null),
         needModels
@@ -692,6 +702,12 @@ async function refreshQoder(state, gateway, opts, log) {
               return null
             })
           : null,
+        // 每日预算（GET /accounts，面板 token 已封装）：best-effort，失败只让三个
+        // 预算字段缺省，不能拖垮整次 Qoder 刷新。
+        qoder.accounts().catch(error => {
+          log('读取 Qoder 账号列表失败', error)
+          return null
+        }),
       ])
       if (catalog) {
         state.models.qoder = parseQoderCatalog(catalog)
@@ -708,25 +724,44 @@ async function refreshQoder(state, gateway, opts, log) {
         state.usage.qoderAt = now - USAGE_TTL_MS + 2 * 60_000
       }
       if (catalog || usage) buildPrice(state, opts)
-      const accounts = (Array.isArray(summary?.accounts) ? summary.accounts : []).map(row => ({
-        uid: String(row.uid || ''),
-        nickname: String(row.nickname || ''),
-        realm: 'qoder',
-        // 上游 registered 口径：remain = 剩余，size = 总额度
-        credits: toNumber(row.credits_remain),
-        creditsTotal: toNumber(row.credits_size),
-        used: toNumber(row.credits_used),
-        cooling: false,
-        disabled: false,
-        disabledReason: '',
-        lastSuccess: row.registered_at ? new Date(toNumber(row.registered_at) * 1000).toISOString() : '',
-        rateLimitedModels: [],
-        degradeUntil: '',
-        consecutiveFails: 0,
-        modelCosts: [],
-        // 签到状态与 WorkBuddy 对齐：调度器最近一次巡检即当日签到
-        checkin: qoderCheckinView(scheduler),
-      }))
+      // 每日预算：/accounts 行按 uid 与积分汇总对齐；本次拉取失败时沿用上次成功值，
+      // 避免网关抖动让「已用/上限」闪回缺省。
+      const panelByUid = new Map()
+      for (const row of Array.isArray(panel?.accounts) ? panel.accounts : []) {
+        if (row && typeof row.uid === 'string' && row.uid) panelByUid.set(row.uid, row)
+      }
+      const previousByUid = new Map(
+        (cached && Array.isArray(cached.accounts) ? cached.accounts : []).map(account => [account.uid, account]),
+      )
+      const accounts = (Array.isArray(summary?.accounts) ? summary.accounts : []).map(row => {
+        const uid = String(row.uid || '')
+        const panelRow = panelByUid.get(uid) || null
+        const previous = previousByUid.get(uid) || null
+        return {
+          uid,
+          nickname: String(row.nickname || ''),
+          realm: 'qoder',
+          // 上游 registered 口径：remain = 剩余，size = 总额度
+          credits: toNumber(row.credits_remain),
+          creditsTotal: toNumber(row.credits_size),
+          used: toNumber(row.credits_used),
+          cooling: false,
+          disabled: false,
+          disabledReason: '',
+          lastSuccess: row.registered_at ? new Date(toNumber(row.registered_at) * 1000).toISOString() : '',
+          rateLimitedModels: [],
+          degradeUntil: '',
+          consecutiveFails: 0,
+          modelCosts: [],
+          // 签到状态与 WorkBuddy 对齐：调度器最近一次巡检即当日签到
+          checkin: qoderCheckinView(scheduler),
+          // 每日预算统一字段：本次 /accounts 无该行（或接口失败）时保持上一次的值，
+          // 从未拿到过则 undefined/0，展示侧回落旧的「今日消耗」口径。
+          dailyCreditSpent: panelRow ? optionalNumber(panelRow.dailyCreditsToday) : previous ? previous.dailyCreditSpent : undefined,
+          dailyCreditLimit: panelRow ? toNumber(panelRow.dailyCreditLimit) : previous ? previous.dailyCreditLimit : 0,
+          capped: panelRow ? panelRow.creditLimitReached === true : previous ? previous.capped === true : false,
+        }
+      })
       state.qoder = {
         enabled: true,
         online: true,
@@ -1084,6 +1119,11 @@ function applyOverview(state, overview, opts) {
       // 连败降权截止（零值/已过时由展示侧过滤）
       degradeUntil: normalizeTimestamp(account.degrade_until),
       consecutiveFails: toNumber(account.consecutive_fails),
+      // 每日积分预算（网关强制）：旧网关没有这三个字段，缺失时保持 undefined/0，
+      // 展示侧据此回落旧的「今日消耗」样式。
+      dailyCreditSpent: optionalNumber(account.daily_credit_spent),
+      dailyCreditLimit: toNumber(account.daily_credit_limit),
+      capped: account.daily_credit_capped === true,
       // 账号最近一次上游请求（面板随每次调用回写）：用于侧边栏「哪个账号在消耗」。
       tokenUsage: {
         lastUsedAt: normalizeTimestamp(account.token_usage?.last_used_at),
@@ -1839,6 +1879,10 @@ function buildPayload(state, ledger, opts, sessionId, activitySessionId) {
     credits: account.credits,
     creditsTotal: account.creditsTotal,
     todayCredits: round2(state.daily.workbuddy.get(account.uid) || 0),
+    // 每日预算（网关强制）：旧网关没有这三个字段 → undefined/0/false，客户端回落旧样式。
+    dailyCreditSpent: account.dailyCreditSpent,
+    dailyCreditLimit: account.dailyCreditLimit,
+    capped: account.capped === true,
     cooling: account.cooling,
     disabled: account.disabled,
     disabledReason: account.disabledReason,
@@ -1865,6 +1909,9 @@ function buildPayload(state, ledger, opts, sessionId, activitySessionId) {
           creditsTotal: account.creditsTotal,
           used: account.used || 0,
           todayCredits: round2(state.daily.qoder.get(account.uid) || 0),
+          dailyCreditSpent: account.dailyCreditSpent,
+          dailyCreditLimit: account.dailyCreditLimit,
+          capped: account.capped === true,
           cooling: account.cooling,
           disabled: account.disabled,
           lastSuccess: account.lastSuccess,

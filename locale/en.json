@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Free Tier Credits",
-    "description": "Credits and daily check-in state for WorkBuddy and Qoder upstream accounts, plus credits per conversation."
+    "description": "Credits, daily credit budget (used / limit / remaining / capped), and daily check-in state for WorkBuddy and Qoder upstream accounts, plus credits per conversation."
   }
 }

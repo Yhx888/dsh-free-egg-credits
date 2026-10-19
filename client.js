@@ -93,6 +93,13 @@ window.__ModuleLoader__.load({
       'qoder.checkinOk': '已签到 {nickname}',
       'qoder.checkinFail': '签到失败：{message}',
       'qoder.used': '已用 {used} / {total}',
+      // 每日积分预算（网关强制，插件只读展示）
+      'budget.todayTitle': '今日已用 ≈{used} / 上限 {limit}（剩余 ≈{remaining}，本地时间 0 点起）',
+      'budget.cappedTip': '今日已满额，已停用，明日 0 点恢复',
+      'budget.aria': '今日已用 / 上限',
+      'budget.allCapped': '今日额度已用完：DeepSeek 暂停，可切 qwen3.8-flash（免费）',
+      'settings.todayBudget': '今日已用 ≈{used} / {limit}（剩余 ≈{remaining}）',
+      'settings.capped': '今日已满额，账号已停用，明日 0 点恢复',
     }
 
     const EN = {
@@ -165,6 +172,13 @@ window.__ModuleLoader__.load({
       'qoder.checkinOk': 'Checked in {nickname}',
       'qoder.checkinFail': 'Check-in failed: {message}',
       'qoder.used': 'Used {used} / {total}',
+      // Daily credit budget (enforced by the gateways; this plugin only displays it)
+      'budget.todayTitle': '≈{used} of {limit} credits used today (≈{remaining} left, since local midnight)',
+      'budget.cappedTip': 'Daily limit reached — account paused, resets at 00:00',
+      'budget.aria': 'Used / daily limit',
+      'budget.allCapped': 'Daily credits used up: DeepSeek paused, switch to qwen3.8-flash (free)',
+      'settings.todayBudget': '≈{used} of {limit} credits used today (≈{remaining} left)',
+      'settings.capped': 'Daily limit reached — account paused, resets at 00:00',
     }
 
     let boundTranslate = null
@@ -384,6 +398,41 @@ window.__ModuleLoader__.load({
     }
 
     // -----------------------------------------------------------------------
+    // 每日积分预算（网关强制，插件只读展示）
+    // -----------------------------------------------------------------------
+
+    /** 数字或 null：旧快照缺字段与 Qoder 面板的 null 都按「未知」处理，不能当 0。 */
+    function optionalNumber(value) {
+      if (value === null || value === undefined || value === '') return null
+      const number = Number(value)
+      return Number.isFinite(number) ? number : null
+    }
+
+    /**
+     * 账号的每日预算视图。limit>0 才算启用；旧快照没有这三个字段时 enabled=false，
+     * 展示继续走 todayCredits 的旧口径（与 1.3.0 行为一致）。
+     */
+    function dailyBudget(account) {
+      const limit = Number(account && account.dailyCreditLimit)
+      const enabled = Number.isFinite(limit) && limit > 0
+      const spent = optionalNumber(account && account.dailyCreditSpent)
+      const used = spent !== null ? spent : optionalNumber(account && account.todayCredits)
+      return {
+        enabled,
+        limit: enabled ? limit : 0,
+        used,
+        // 剩余按网关口径 limit - 已用；已超额时显示 0，不出现负数
+        remaining: enabled && used !== null ? Math.max(0, limit - used) : null,
+        capped: account && account.capped === true,
+      }
+    }
+
+    /** 本次快照的账号是否全部满额（至少 1 个）；旧快照没有 capped 字段时恒为 false。 */
+    function allAccountsCapped(entries) {
+      return entries.length > 0 && entries.every(entry => entry && entry.account && entry.account.capped === true)
+    }
+
+    // -----------------------------------------------------------------------
     // 限流状态：网关 6004 模型级台账 + 连败降权（until 已过的一律视为解除）
     // -----------------------------------------------------------------------
 
@@ -514,6 +563,10 @@ window.__ModuleLoader__.load({
       '.wbcd-side-badge{flex:none;font-size:10px;line-height:14px;padding:0 4px;border-radius:4px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1);font-weight:500}',
       '.wbcd-side-today{flex:none;display:inline-flex;align-items:center;gap:2px;font-size:10px;line-height:14px;padding:0 4px;border-radius:4px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1);font-variant-numeric:tabular-nums}',
       '.wbcd-side-today svg{flex:none;opacity:.7}',
+      // 满额：沿用宿主的警示色（错误红），不引入新样式体系
+      '.wbcd-side-today.is-capped{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}',
+      '.wbcd-side-today.is-capped svg{opacity:1}',
+      '.wbcd-side-allcapped{font-size:11px;line-height:16px;color:var(--dsw-alias-state-error-primary)}',
       '.wbcd-side-flag{flex:none;font-size:10px;line-height:14px;padding:0 4px;border-radius:4px;color:var(--dsw-alias-state-error-primary);border:1px solid var(--dsw-alias-state-error-primary)}',
       '.wbcd-side-flag-degrade{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary)}',
       '.wbcd-side-offline{color:var(--dsw-alias-state-error-primary);flex:none}',
@@ -789,6 +842,8 @@ window.__ModuleLoader__.load({
             ? 'qoder-' + activity.uid
             : String(activity.uid || '')
           : ''
+      // 全部账号都满额时给一行提示（没有满额或旧快照不显示）
+      const allCapped = allAccountsCapped(rows)
 
       return h(
         'div',
@@ -817,6 +872,7 @@ window.__ModuleLoader__.load({
           const degradeMs = source === 'workbuddy' ? degradeUntilMs(account) : 0
           const streak = source === 'workbuddy' ? failStreak(account) : 0
           const visual = checkinVisual(account, props.t)
+          const budget = dailyBudget(account)
           const title =
             source === 'qoder'
               ? [
@@ -839,20 +895,42 @@ window.__ModuleLoader__.load({
             h('span', { className: 'wbcd-dot wbcd-' + visual.state }),
             h('span', { className: 'wbcd-side-name' }, accountName(account)),
             h('span', { className: 'wbcd-side-badge' }, source === 'qoder' ? 'Qoder' : 'WB'),
-            Number.isFinite(Number(account.todayCredits))
+            budget.enabled && budget.used !== null
               ? h(
                   'span',
                   {
-                    className: 'wbcd-side-today',
-                    title: translateWith(props.t, 'sidebar.todayTitle', '今日已消耗 ≈{credits} 积分（本地时间 0 点起）', {
-                      credits: formatCredits(account.todayCredits),
-                    }),
-                    'aria-label': translateWith(props.t, 'sidebar.today', '今日消耗'),
+                    className: 'wbcd-side-today' + (budget.capped ? ' is-capped' : ''),
+                    title: budget.capped
+                      ? translateWith(props.t, 'budget.cappedTip', '今日已满额，已停用，明日 0 点恢复')
+                      : translateWith(
+                          props.t,
+                          'budget.todayTitle',
+                          '今日已用 ≈{used} / 上限 {limit}（剩余 ≈{remaining}，本地时间 0 点起）',
+                          {
+                            used: formatCredits(budget.used),
+                            limit: formatCredits(budget.limit),
+                            remaining: budget.remaining === null ? '—' : formatCredits(budget.remaining),
+                          },
+                        ),
+                    'aria-label': translateWith(props.t, 'budget.aria', '今日已用 / 上限'),
                   },
                   h(TodayIcon),
-                  formatCredits(account.todayCredits),
+                  formatCredits(budget.used) + '/' + formatCredits(budget.limit),
                 )
-              : null,
+              : Number.isFinite(Number(account.todayCredits))
+                ? h(
+                    'span',
+                    {
+                      className: 'wbcd-side-today',
+                      title: translateWith(props.t, 'sidebar.todayTitle', '今日已消耗 ≈{credits} 积分（本地时间 0 点起）', {
+                        credits: formatCredits(account.todayCredits),
+                      }),
+                      'aria-label': translateWith(props.t, 'sidebar.today', '今日消耗'),
+                    },
+                    h(TodayIcon),
+                    formatCredits(account.todayCredits),
+                  )
+                : null,
             limited
               ? h('span', { className: 'wbcd-side-flag' }, flagText(translateWith(props.t, 'limit.flag', '限流'), limitMs))
               : degradeMs > 0
@@ -863,6 +941,13 @@ window.__ModuleLoader__.load({
             h('span', { className: 'wbcd-side-credits' }, formatBalance(account.credits)),
           )
         }),
+        allCapped
+          ? h(
+              'div',
+              { className: 'wbcd-side-allcapped' },
+              translateWith(props.t, 'budget.allCapped', '今日额度已用完：DeepSeek 暂停，可切 qwen3.8-flash（免费）'),
+            )
+          : null,
       )
     })
 
@@ -1000,6 +1085,8 @@ window.__ModuleLoader__.load({
         ...accounts.map(account => ({ account, source: 'workbuddy' })),
         ...qoderAccounts.map(account => ({ account, source: 'qoder' })),
       ]
+      // 全部账号都满额时在页面顶部给一行提示（没有满额或旧快照不显示）
+      const allCapped = allAccountsCapped(accountRows)
 
       const runAction = React.useCallback(
         (label, path) => {
@@ -1073,6 +1160,7 @@ window.__ModuleLoader__.load({
         const total = Number(account.creditsTotal) || 0
         const used = Number(account.used) || 0
         const checkinBusy = isQoder ? 'qoder-checkin' : account.uid
+        const budget = dailyBudget(account)
         return h(
           'div',
           { key: source + '-' + account.uid, className: 'wbcd-card' },
@@ -1101,10 +1189,23 @@ window.__ModuleLoader__.load({
                 total: formatBalance(total),
               }))
             : null,
-          Number.isFinite(Number(account.todayCredits))
-            ? h('div', { className: 'wbcd-line' }, tr('settings.today', '今日消耗 ≈{credits} 积分', {
-                credits: formatCredits(account.todayCredits),
-              }))
+          budget.enabled && budget.used !== null
+            ? h(
+                'div',
+                { className: 'wbcd-line' },
+                tr('settings.todayBudget', '今日已用 ≈{used} / {limit}（剩余 ≈{remaining}）', {
+                  used: formatCredits(budget.used),
+                  limit: formatCredits(budget.limit),
+                  remaining: budget.remaining === null ? '—' : formatCredits(budget.remaining),
+                }),
+              )
+            : Number.isFinite(Number(account.todayCredits))
+              ? h('div', { className: 'wbcd-line' }, tr('settings.today', '今日消耗 ≈{credits} 积分', {
+                  credits: formatCredits(account.todayCredits),
+                }))
+              : null,
+          budget.capped
+            ? h('div', { className: 'wbcd-line wbcd-bad' }, tr('settings.capped', '今日已满额，账号已停用，明日 0 点恢复'))
             : null,
           last ? h('div', { className: 'wbcd-line' }, tr('settings.lastSuccess', '最近成功 {time}', { time: last })) : null,
           !isQoder && account.cooling ? h('div', { className: 'wbcd-line wbcd-bad' }, '冷却中') : null,
@@ -1182,6 +1283,13 @@ window.__ModuleLoader__.load({
           h('h2', { className: 'wbcd-page-title' }, tr('section.title', 'Free Egg 积分')),
           h('p', { className: 'wbcd-page-desc' }, tr('section.desc', '国内账号可用积分、每日签到状态，以及每条对话消耗的积分。')),
         ),
+        allCapped
+          ? h(
+              'div',
+              { className: 'wbcd-notice wbcd-bad' },
+              tr('budget.allCapped', '今日额度已用完：DeepSeek 暂停，可切 qwen3.8-flash（免费）'),
+            )
+          : null,
         h(
           'div',
           { className: 'wbcd-sub' },

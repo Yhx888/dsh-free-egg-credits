@@ -7,9 +7,10 @@
 [![DSH plugin](https://img.shields.io/badge/DSH-plugin-4b8bf5.svg)](https://github.com/topics/dsh-plugin)
 
 A plugin for the DSH (DeepSeek Harness) web UI that surfaces the
-**available credits**, **daily check-in state** of accounts on your local reverse-proxy gateways
-(WorkBuddy / Qoder), and the **credits each conversation** is estimated to have consumed — in the
-sidebar, under the composer, at the end of every turn, and in a settings section.
+**available credits**, **daily credit budget (used / limit / remaining / capped)** and
+**daily check-in state** of accounts on your local reverse-proxy gateways (WorkBuddy / Qoder),
+plus the **credits each conversation** is estimated to have consumed — in the sidebar, under the
+composer, at the end of every turn, and in a settings section.
 
 > Credits are **estimates**: WorkBuddy uses its account `model_costs` ledger and Qoder uses the panel
 > `/usage` ledger (real `credit ÷ total_tokens`) as measured rates; models without measurements are
@@ -26,7 +27,10 @@ sidebar, under the composer, at the end of every turn, and in a settings section
   it never jumps around with the globally latest request). The active row gets a **gray
   selection-style background**, with no extra row or top banner. Each row also has a small
   "today's usage" pill (down-arrow icon + credits): WorkBuddy from balance deltas, Qoder from its
-  usage ledger.
+  usage ledger. Once the gateway enables the daily credit budget it becomes "used / limit"
+  (e.g. `118/100`); a capped account is drawn in the host warning color (hover: "Daily limit
+  reached — account paused, resets at 00:00"), and when every account is capped the block gets one
+  extra "daily credits used up" line.
 - **Below the composer**: total estimated credits for the current conversation. As long as the
   conversation uses a model from a free-egg provider (by default `free-egg` / `workbuddy` / `qoder` /
   `new-api`), this strip stays visible — `≈0` before the first reply, and a “rate pending” hint when
@@ -35,8 +39,9 @@ sidebar, under the composer, at the end of every turn, and in a settings section
 - **End of each turn**: estimated credits for that turn (`This turn ≈N credits`; hover for tokens
   and models).
 - **Settings → Free Tier Credits**: account cards (name / source / balance / check-in / usage /
-  check-in now), rate-limit and degrade details, the measured credit rate, recent chats and
-  per-turn breakdown.
+  daily used ≈X of limit (≈Y left) / check-in now), rate-limit and degrade details, the measured
+  credit rate, recent chats and per-turn breakdown. When every account is capped, a notice line is
+  added at the top of the page.
 
 WorkBuddy and Qoder accounts share the same row/card layout and are distinguished only by the
 source badge.
@@ -130,6 +135,42 @@ Put this in the target profile's `cordis.patch.yml` (plugin id `free-egg-credits
 | `catalogBaseCreditsPer1k` | `0` | Fallback calibration base for catalog-multiplier estimates (credits per 1k tokens per multiplier unit); `0` = auto-calibrate from measured gateway rates only |
 | `qoder` | none | Qoder gateway config: `baseUrl`, `panelPasswordFile`, `panelPassword` (inline fallback), `enabled`. Omit to disable the Qoder source |
 
+## Daily credit budget (enforced by the gateways)
+
+The daily budget and account selection are enforced **by the gateways**; this plugin only reads
+the fields and displays them (it never throttles or switches accounts). Reference setup on this
+machine:
+
+- **WorkBuddy** (`workbuddy2api` `config.json` → `pool`): `daily_credit_limit = 100` (`0` disables
+  it) plus `prefer_credits = true` (healthy candidates are preferred by highest balance).
+- **Qoder** (`qoder2api-hub` panel → "daily credit limit"): per-realm `daily_credit_limit = 100`
+  (`cn`).
+
+Once enabled:
+
+- When an account's usage reaches the limit (WorkBuddy `daily_credit_spent >= daily_credit_limit`;
+  Qoder `creditLimitReached = true`), the gateway stops routing new requests to it (sticky-session
+  paths reject it and let the caller re-select);
+- Within one gateway the **highest-balance** account is used first, until it hits its limit and is
+  skipped;
+- After all four accounts (2 WorkBuddy + 2 Qoder) are capped, DeepSeek requests are paused (the
+  gateway returns an error); Qoder's free models (`price_factor = 0`, e.g. `qwen3.8-flash`) are not
+  subject to the daily credit quota and keep working.
+
+What the plugin shows:
+
+- The sidebar pill becomes "used / limit" (e.g. `118/100`) when a budget is enabled; a capped
+  account uses the host warning color and its tooltip spells out "Daily limit reached — account
+  paused, resets at 00:00". Without a budget it keeps the old `≈N credits` style.
+- The settings card shows "≈X of 100 credits used today (≈Y left)" plus a cap notice line.
+- When **all** accounts in one snapshot (WorkBuddy + Qoder combined, at least one) are capped, both
+  the top of the settings page and the sidebar block add one line:
+  "Daily credits used up: DeepSeek paused, switch to qwen3.8-flash (free)".
+
+> Old gateways without the daily-budget fields, or a failed Qoder `/accounts` read, make the plugin
+> fall back to the previous "today's usage" rendering (Qoder keeps the last successfully fetched
+> budget values); the refresh itself still succeeds.
+
 ## Data sources
 
 | Data | Source |
@@ -140,6 +181,7 @@ Put this in the target profile's `cordis.patch.yml` (plugin id `free-egg-credits
 | Qoder check-in | Qoder gateway `GET /scheduler`: if the scheduler ran a check-in pass today, it counts as checked in; `next_run_time` is the next pass |
 | Session serving account | WorkBuddy panel `token_usage.last_used_at` / `last_model`; Qoder panel `GET /usage/recent` (`account` / `model` / `at`, cached for 3 s). After each reply the host waits 1.5 s, refreshes both gateways and matches the latest request to that session by timestamp; the first match is pinned and never switches |
 | Today's usage per account | WorkBuddy: sum of balance decreases between snapshots (the gateway deducts the upstream `credit` from account balance); the ledger is persisted to `<DSH_HOME>/free-egg-credits/daily.json` and continues across DSH restarts. Qoder: exact sum of `credit` over today's `/usage/recent` rows |
+| Daily credit budget / used today | WorkBuddy: `daily_credit_spent` / `daily_credit_limit` / `daily_credit_capped` on `GET /panel/api/overview` account rows; Qoder: `dailyCreditsToday` / `dailyCreditLimit` / `creditLimitReached` from `GET /accounts` (panel token handled on the host), fetched in the same refresh as `/credits/summary` (60 s cache kept). Missing fields (old gateways) stay undefined/0/false and the UI falls back to the old "today's usage" rendering; a failed `/accounts` read only leaves the budget fields absent and never fails the Qoder credits refresh |
 | Tokens per turn | `assistant/message.usage` in DSH session events (folded on the host, never persisted) |
 | Credit rate (WorkBuddy measured) | `model_costs[].cost_per_1k` from gateway account state, weighted by sample count |
 | Credit rate (Qoder measured) | Qoder panel `GET /usage` `by_model` ledger: real `credit ÷ total_tokens` (includes cache-hit discounts); cached for 5 minutes |
@@ -161,7 +203,9 @@ The plugin has a host half and a client half:
   `token_usage` and Qoder `/usage/recent`, attributes that request to the session by timestamp and
   pins the first match (a session never switches accounts), and maintains per-account "today's
   usage" (WorkBuddy balance deltas persisted across restarts; Qoder exact ledger sums) for the
-  sidebar. Keys, password and panel token only ever exist in this process.
+  sidebar. It also maps the gateway-side daily budget fields (WorkBuddy `/panel/api/overview`;
+  Qoder `/accounts`, best-effort with last-known values retained on failure). Keys, password and
+  panel token only ever exist in this process.
 - **Client half (`client.js`)**: a hand-written `window.__ModuleLoader__` bundle that injects React
   components into `sidebar.footer.action`, `conversation.composer.dock`,
   `conversation.chat.turnTail` and `settings.section`. It only reads the same-origin endpoints
@@ -205,6 +249,11 @@ Please report security issues privately as described in [SECURITY.md](SECURITY.m
 - Qoder credits use the upstream registered view (`credits_remain` / `credits_size`) and are
   written back by the gateway after check-in or usage. Snapshots are cached for 60 seconds; the
   settings page refresh forces a new pull.
+- The daily credit budget is **enforced by the gateways**; the plugin only displays it and never
+  throttles or switches accounts. Without the fields (old gateways) or when the Qoder panel
+  `/accounts` read fails, the UI falls back to the 1.3.0 "today's usage" rendering (Qoder keeps the
+  last successfully fetched budget values); the Qoder panel `/accounts` view only covers the
+  current realm, so accounts in other realms may lack budget data.
 - Built against the current DSH `slots` / `webServer` / `session/event` mechanisms; major DSH
   changes may require follow-up work.
 
@@ -216,7 +265,11 @@ npm run check   # node --check index.js && node --check client.js
 
 - No runtime dependencies; no `npm install` needed.
 - Host-half changes require a DSH restart; client-half changes only a page refresh.
-- When adding UI strings, update both the `ZH` and `EN` tables in `client.js`.
+- When adding UI strings, update both the `ZH` and `EN` tables in `client.js` (they are the fallback
+  used by `translateWith`).
+- `locale/*.json` is display metadata for the DSH plugin market and only reads `meta.title` /
+  `meta.description`; keep `locale/zh.json` and `locale/en.json` in sync when the plugin blurb
+  changes.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details and [CHANGELOG.md](CHANGELOG.md) for release
 history.

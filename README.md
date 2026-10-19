@@ -9,8 +9,9 @@
 [![DSH plugin](https://img.shields.io/badge/DSH-plugin-4b8bf5.svg)](https://github.com/topics/dsh-plugin)
 
 一个 DSH（DeepSeek Harness）Web 界面插件：把本地反代网关
-（WorkBuddy / Qoder）里各账号的**可用积分**、**每日签到状态**，以及**每条对话折算消耗的积分**
-直接显示在界面里——侧边栏、输入框下方、每轮对话末尾和设置页各有一个落点。
+（WorkBuddy / Qoder）里各账号的**可用积分**、**每日积分预算（已用 / 上限 / 剩余 / 满额）**、
+**每日签到状态**，以及**每条对话折算消耗的积分**直接显示在界面里——侧边栏、输入框下方、
+每轮对话末尾和设置页各有一个落点。
 
 > 积分为**折算值**：WorkBuddy 用账号 `model_costs` 台账、Qoder 用面板 `/usage` 台账（真实 `credit ÷ total_tokens`）作为实测单价；未实测的模型按各网关的模型目录倍率折算，界面统一带 `≈` 标记。
 
@@ -21,12 +22,15 @@
   **选中逻辑按前台会话固定**：每个会话在首轮回复后固定一个承载账号，之后不再换号；切换前台会话只会切换
   高亮行，不会跟着全局最近请求来回跳。正在消耗的账号行加**灰色底框（选中态）**，不额外占一行。
   每行还有一个「今日消耗」小框（向下小箭头 + 积分）：WorkBuddy 按余额差值累计、Qoder 按用量台账精确累加。
+  网关启用每日积分预算后改为「已用/上限」（如 `118/100`），满额时用宿主警示色标出（悬停见
+  「今日已满额，已停用，明日 0 点恢复」）；全部账号满额时区块底部多一行「今日额度已用完」提示。
 - **输入框下方**：当前对话累计消耗（`Free Egg · 本会话 ≈N 积分`）。只要当前对话用的是 free-egg provider
   （默认 `free-egg` / `workbuddy` / `qoder` / `new-api`）的模型，这条就常显——首轮回复前是 `≈0`，
   模型暂时没有单价时提示「等待单价」；换到其他 provider（如 DeepSeek 官方账号）的模型则不显示，避免误导。
 - **每条对话末尾**：该轮折算消耗（`本轮 ≈N 积分`，悬停可看 token 与模型）。
-- **设置 → Free Egg 积分**：账号卡（名称 / 来源徽标 / 余额 / 签到状态 / 已用占比 / 立即签到）、
-  限流与降权明细、折算单价、最近对话与逐轮明细。
+- **设置 → Free Egg 积分**：账号卡（名称 / 来源徽标 / 余额 / 签到状态 / 已用占比 /
+  今日已用 ≈X / 上限（剩余 ≈Y） / 立即签到）、限流与降权明细、折算单价、最近对话与逐轮明细；
+  全部账号满额时页面顶部加一行提示。
 
 WorkBuddy 与 Qoder 账号共用同一套行 / 卡片结构，只以来源徽标区分。
 
@@ -116,6 +120,33 @@ New-Item -ItemType Junction `
 | `catalogBaseCreditsPer1k` | `0` | 目录倍率折算的兜底基线（积分/千 token/倍率单位）；`0` = 只用网关实测台账自动校准 |
 | `qoder` | 无 | Qoder 网关子配置：`baseUrl`、`panelPasswordFile`（面板密码文件）、`panelPassword`（内联兜底）、`enabled`。不配置则不启用 Qoder 来源 |
 
+## 每日积分预算（网关层强制）
+
+每日预算与选号都由**网关**强制，插件只负责读字段展示（不参与限流、不参与换号）。本机参考配置：
+
+- **WorkBuddy**（`workbuddy2api` 的 `config.json` → `pool`）：`daily_credit_limit = 100`（`0` = 关闭）
+  + `prefer_credits = true`（健康候选按余额从高到低优先）。
+- **Qoder**（`qoder2api-hub` 面板「设置 → 每日积分限额」）：按域的 `daily_credit_limit = 100`（`cn`）。
+
+生效后的行为：
+
+- 账号当天累计消耗达到上限（WorkBuddy `daily_credit_spent >= daily_credit_limit`；Qoder
+  `creditLimitReached = true`）后，网关不再把新请求分给该账号（粘性会话路径也会拒绝并让上层重新选号）；
+- 同一网关内优先使用**余额最高**的账号，直到它达上限被跳过；
+- 四个账号（WorkBuddy 2 + Qoder 2）都满额后，DeepSeek 请求暂停（网关返回错误）；Qoder 的免费
+  模型（`price_factor = 0`，如 `qwen3.8-flash`）不受每日积分配额限制，仍可继续使用。
+
+插件侧的展示：
+
+- 侧边栏账号行的小框在启用预算时显示「已用/上限」（如 `118/100`），满额时用宿主警示色标出，
+  tooltip 明确「今日已满额，已停用，明日 0 点恢复」；未启用预算时仍是原来的「≈N 积分」。
+- 设置页账号卡显示「今日已用 ≈X / 100（剩余 ≈Y）」，满额时多一行提示。
+- 一次快照里**所有**账号（WorkBuddy + Qoder 合计，至少一个）都满额时，设置页顶部与侧边栏
+  各给一行提示：「今日额度已用完：DeepSeek 暂停，可切 qwen3.8-flash（免费）」。
+
+> 旧网关没有每日预算字段，或 Qoder 面板 `/accounts` 读取失败时，插件自动回落到旧的「今日消耗」
+> 展示（Qoder 会沿用上一次成功拿到的预算值），不会让整次刷新失败。
+
 ## 数据来源
 
 | 数据 | 来源 |
@@ -126,6 +157,7 @@ New-Item -ItemType Junction `
 | Qoder 签到状态 | Qoder 网关 `GET /scheduler`：调度器当天跑过巡检即视为「今日已签到」，`next_run_time` 为下次巡检 |
 | 会话消耗账号 | WorkBuddy 面板 `token_usage.last_used_at` / `last_model`；Qoder 面板 `GET /usage/recent`（`account` / `model` / `at`，3 秒缓存）。每轮回复结束后 Host 侧延迟 1.5 秒刷新两侧网关，按事件时刻就近匹配到该会话；首次匹配后固定，不再换号 |
 | 账号当日消耗 | WorkBuddy：累加两次快照之间的余额下降量（网关按上游 `credit` 扣减账号余额），账本落盘 `<DSH_HOME>/free-egg-credits/daily.json`，重启 DSH 继续算；Qoder：当天 `/usage/recent` 台账的 `credit` 逐条累加（精确值） |
+| 每日积分预算 / 今日已用 | WorkBuddy：面板 `GET /panel/api/overview` 账号行的 `daily_credit_spent` / `daily_credit_limit` / `daily_credit_capped`；Qoder：面板 `GET /accounts`（面板 token 已封装）的 `dailyCreditsToday` / `dailyCreditLimit` / `creditLimitReached`，与 `/credits/summary` 并进同一次刷新（保留 60 秒缓存）。字段缺失（旧网关）时保持 undefined/0/false，界面回落旧的「今日消耗」样式；`/accounts` 失败只让预算字段缺省，不影响 Qoder 积分刷新 |
 | 每轮 token | DSH Session 事件里的 `assistant/message.usage`（Host 侧折叠，不落盘） |
 | 积分单价（WorkBuddy 实测） | 网关账号状态里的 `model_costs[].cost_per_1k`（按样本数加权） |
 | 积分单价（Qoder 实测） | Qoder 面板 `GET /usage` 的 `by_model` 台账：真实 `credit ÷ total_tokens`（含缓存命中折扣），5 分钟缓存 |
@@ -144,7 +176,8 @@ New-Item -ItemType Junction `
   token 用量、按 provider 判断是否 free-egg 模型、按「实测单价 → 目录倍率折算 → 配置覆盖」折算积分；
   并在每轮回复结束后刷新 WorkBuddy `token_usage` 与 Qoder `/usage/recent`，按事件时刻把这次消耗
   归属并固定在对应会话（会话 → 账号不再来回切）；同时维护每个账号的「今日消耗」账本
-  （WorkBuddy 余额差值 + 落盘续算，Qoder 台账精确累加），供侧边栏展示。
+  （WorkBuddy 余额差值 + 落盘续算，Qoder 台账精确累加），并映射网关侧的每日积分预算字段
+  （WB `/panel/api/overview`；Qoder `/accounts`，best-effort 且失败保留上次值），供侧边栏展示。
   密钥、面板密码、token 全部只在这个进程内使用。
 - **Client 半（`client.js`）**：手写 `window.__ModuleLoader__` bundle，向 `sidebar.footer.action`、
   `conversation.composer.dock`、`conversation.chat.turnTail`、`settings.section` 四个席位注入 React 组件，
@@ -175,6 +208,9 @@ New-Item -ItemType Junction `
 - 签到状态依赖一次幂等的签到调用；关闭 `autoCheckin` 后状态可能为「未知」。
 - Qoder 积分为上游 registered 口径（`credits_remain` / `credits_size`），签到或消费后由网关写回；
   快照缓存 60 秒，设置页点刷新可强制重拉。
+- 每日积分预算的**强制**在网关侧：插件只读展示，不参与选号或拦截。旧网关没有预算字段、或
+  Qoder 面板 `/accounts` 不可用时，界面回到 1.3.0 的「今日消耗」样式（Qoder 沿用上次成功值）；
+  Qoder 面板 `/accounts` 默认只返回当前域的账号，跨域账号可能拿不到预算数据。
 - 契合最新 DSH 的 `slots` / `webServer` / `session/event` 机制；DSH 大版本改动后可能需要跟进适配。
 
 ## 开发与贡献
@@ -185,7 +221,9 @@ npm run check   # node --check index.js && node --check client.js
 
 - 零运行时依赖，不需要 `npm install`。
 - Host 半改动需重启 DSH；Client 半改动刷新页面即可。
-- 新增界面文案时同时补 `client.js` 里 `ZH` / `EN` 两份词条。
+- 新增界面文案时同时补 `client.js` 里 `ZH` / `EN` 两份词条（`translateWith` 用它们兜底）。
+- `locale/*.json` 是 DSH 插件市场展示用的元数据，只认 `meta.title` / `meta.description`；
+  改插件介绍时同步更新 `locale/zh.json` 与 `locale/en.json`。
 
 详见 [CONTRIBUTING.md](CONTRIBUTING.md)。版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 

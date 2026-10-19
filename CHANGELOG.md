@@ -3,6 +3,30 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.4.0] - 2026-10-19
+
+### 新增
+
+- **每日积分预算展示（网关强制）**：网关为每个账号维护当天已用积分并强制限额后，插件把
+  「今日已用 / 每日上限 / 剩余 / 满额」显示出来：
+  - 侧边栏账号行的「今日消耗」小框在 `dailyCreditLimit > 0` 时改为「已用/上限」（如 `118/100`）；
+    满额时小框用宿主警示色，tooltip 明确「今日已满额，已停用，明日 0 点恢复」。
+  - 设置页账号卡增加「今日已用 ≈X / 100（剩余 ≈Y）」；满额时多一行停用提示。
+  - 一次快照里所有账号（WorkBuddy + Qoder 合计，至少一个）都满额时，设置页顶部与侧边栏
+    账号区块各给一行「今日额度已用完：DeepSeek 暂停，可切 qwen3.8-flash（免费）」。
+- Host 侧映射统一字段：WorkBuddy `overview` 的 `daily_credit_spent` / `daily_credit_limit` /
+  `daily_credit_capped`；Qoder 面板 `GET /accounts`（面板 token 已封装）的 `dailyCreditsToday` /
+  `dailyCreditLimit` / `creditLimitReached`，与 `/credits/summary` 并进同一次刷新（保留 60 秒缓存）。
+- 新增中英文文案词条；插件元数据描述同步提到每日积分预算。
+
+### 说明
+
+- 预算逻辑与选号在网关侧（WorkBuddy `pool.daily_credit_limit` + `prefer_credits`；Qoder 面板
+  「每日积分限额」）；插件只读展示，不参与限流/换号。
+- 兼容旧网关 / Qoder 面板失败：字段缺失时保持 undefined/0/false，界面回落 1.3.0 的
+  「今日消耗」样式；Qoder `/accounts` 失败只让预算字段缺省并沿用上一次成功值，不影响积分刷新。
+- Host 半改动需重启 DSH 生效；Client 半刷新页面即可。
+
 ## [1.3.0] - 2026-10-19
 
 ### 新增

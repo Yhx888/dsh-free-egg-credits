@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Free Egg 积分",
-    "description": "显示 WorkBuddy 与 Qoder 上游账号的可用积分与每日签到状态，并折算每条对话消耗的积分。"
+    "description": "显示 WorkBuddy 与 Qoder 上游账号的可用积分、每日积分预算（已用/上限/剩余/满额）、每日签到状态，并折算每条对话消耗的积分。"
   }
 }
