@@ -3,6 +3,15 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.5.1] - 2026-10-22
+
+### 变更
+
+- **图标重绘**：改为 DeepSeek 蓝单色方案（深蓝 squircle、白色蛋形、积分用量柱、签到勾），去掉蓝紫渐变与绿色勾；24–256px 下更清晰。
+- **市场文案与安装指引**：README 增加「快速开始 / 一键安装 / 它解决什么」，补全适用人群与搜索关键词；英文 README 同步。
+- **市场元数据**：GitHub 描述、topics、`package.json` keywords、`locale` 描述同步优化，便于在 DSH 插件市场搜索。
+- 无运行时行为变更，纯文档与视觉更新。
+
 ## [1.5.0] - 2026-10-20
 
 ### 新增
