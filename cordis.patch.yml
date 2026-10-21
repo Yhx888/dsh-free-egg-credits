@@ -31,3 +31,16 @@
         qoder:
           baseUrl: 'http://127.0.0.1:8790'
           panelPasswordFile: ''
+        # 「积分优先消耗」切换（可选）：通过 new-api 管理接口改两个渠道的优先级。
+        # accessTokenFile 指向「只含管理员 access token」的文件；也可用 accessToken 内联。
+        # 不配置则整块 UI 隐藏，插件其余行为不变（默认关闭）。
+        # newApi:
+        #   baseUrl: 'http://127.0.0.1:3001'
+        #   userId: 1
+        #   accessTokenFile: ''
+        #   channels:
+        #     workbuddy: 13
+        #     qoder: 12
+        #   priorities:
+        #     preferred: 10
+        #     fallback: 5

@@ -11,17 +11,19 @@
 一个 DSH（DeepSeek Harness）Web 界面插件：把本地反代网关
 （WorkBuddy / Qoder）里各账号的**可用积分**、**每日积分预算（已用 / 上限 / 剩余 / 满额）**、
 **每日签到状态**，以及**每条对话折算消耗的积分**直接显示在界面里——侧边栏、输入框下方、
-每轮对话末尾和设置页各有一个落点。
+每轮对话末尾和设置页各有一个落点。设置页还能一键切换**优先消耗哪个平台的积分**
+（基于本机 new-api 渠道优先级，Qoder 拥堵时点一下切回 WorkBuddy）。
 
 > 积分为**折算值**：WorkBuddy 用账号 `model_costs` 台账、Qoder 用面板 `/usage` 台账（真实 `credit ÷ total_tokens`）作为实测单价；未实测的模型按各网关的模型目录倍率折算，界面统一带 `≈` 标记。
 
 ## 界面落点
 
 - **侧边栏底部（账户行上方）**：账号积分区块。每行统一为「状态点 · 账号名 · 来源徽标（WB/Qoder） · 今日消耗 · 余额」，
-  签到状态只由最左侧状态点表达（绿色 = 今日已签到）；限流 / 降权 / 连败以徽标透出恢复时间。侧边栏收起时不占位。
+  签到状态只由最左侧状态点表达（绿色 = 今日已签到；黄色 = 今日尚未签到 / 今日奖励待领取）；限流 / 降权 / 连败以徽标透出恢复时间。侧边栏收起时不占位。
+  标题行右侧还有一个**「消耗优先级」小 chip**（如 `WB 优先`）：点一下即可切到另一个平台，不用进设置页。
   **选中逻辑按前台会话固定**：每个会话在首轮回复后固定一个承载账号，之后不再换号；切换前台会话只会切换
   高亮行，不会跟着全局最近请求来回跳。正在消耗的账号行加**灰色底框（选中态）**，不额外占一行。
-  每行还有一个「今日消耗」小框（向下小箭头 + 积分）：WorkBuddy 按余额差值累计、Qoder 按用量台账精确累加。
+  每行还有一个「今日消耗」小框（向下小箭头 + 积分）：WorkBuddy 按余额差值累计、Qoder 按用量台账精确累加（`billable=false` 的免费调用不扣积分，也不计入）。
   网关启用每日积分预算后改为「已用/上限」（如 `118/100`），满额时用宿主警示色标出（悬停见
   「今日已满额，已停用，明日 0 点恢复」）；全部账号满额时区块底部多一行「今日额度已用完」提示。
 - **输入框下方**：当前对话累计消耗（`Free Egg · 本会话 ≈N 积分`）。只要当前对话用的是 free-egg provider
@@ -29,7 +31,8 @@
   模型暂时没有单价时提示「等待单价」；换到其他 provider（如 DeepSeek 官方账号）的模型则不显示，避免误导。
 - **每条对话末尾**：该轮折算消耗（`本轮 ≈N 积分`，悬停可看 token 与模型）。
 - **设置 → Free Egg 积分**：账号卡（名称 / 来源徽标 / 余额 / 签到状态 / 已用占比 /
-  今日已用 ≈X / 上限（剩余 ≈Y） / 立即签到）、限流与降权明细、折算单价、最近对话与逐轮明细；
+  今日已用 ≈X / 上限（剩余 ≈Y） / 立即签到）、积分优先消耗（WorkBuddy / Qoder 优先切换）、
+  限流与降权明细、折算单价、最近对话与逐轮明细；
   全部账号满额时页面顶部加一行提示。
 
 WorkBuddy 与 Qoder 账号共用同一套行 / 卡片结构，只以来源徽标区分。
@@ -76,6 +79,7 @@ New-Item -ItemType Junction `
 |---|---|---|
 | [WorkBuddy2API 网关](https://github.com/linguo2625469/workbuddy2api-panel)（`workbuddy2api`） | WorkBuddy / CodeBuddy 账号积分与签到 | `gatewayBaseUrl`、`gatewayConfigPath` |
 | [Qoder 反代网关](https://github.com/shuishuipingan/qoder2api-hub)（`qoder2api-hub`） | Qoder 账号积分与签到调度 | `qoder.baseUrl`、`qoder.panelPasswordFile` |
+| [New API](https://github.com/QuantumNous/new-api)（`new-api`，`:3001`） | 「积分优先消耗」切换（改渠道优先级） | `newApi.*` |
 
 两个网关都**不是**本插件的组成部分；插件只读它们的 HTTP 接口。
 网关密钥与面板密码只在 Host 侧读取、不下发浏览器。
@@ -100,10 +104,24 @@ New-Item -ItemType Junction `
     qoder:
       baseUrl: 'http://127.0.0.1:8790'
       panelPasswordFile: 'C:/path/to/qoder2api/.panel-password'
+    # 可选：「积分优先消耗」切换（改本机 new-api 两个渠道的优先级）。
+    # 不配置则整块 UI 隐藏，其余行为不变。
+    newApi:
+      baseUrl: 'http://127.0.0.1:3001'
+      userId: 1
+      accessTokenFile: 'C:/path/to/new-api-access-token'   # 文件内容 = 管理员 access token
+      # accessToken: '<内联兜底，二选一>'
+      channels:
+        workbuddy: 13
+        qoder: 12
+      priorities:
+        preferred: 10
+        fallback: 5
 ```
 
 > 这一层的 `config` 是**整体替换** bundle 层配置，不是深合并：一旦写了 `qoder`，
-> `qoder` 下的字段要一起写全（`baseUrl` 必填，`panelPasswordFile` / `panelPassword` / `enabled` 可选）。
+> `qoder` 下的字段要一起写全（`baseUrl` 必填，`panelPasswordFile` / `panelPassword` / `enabled` 可选）；
+> `newApi` 同理，`baseUrl` 必填，其余可省略。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
@@ -119,6 +137,7 @@ New-Item -ItemType Junction `
 | `freeEggProviders` | `['free-egg','workbuddy','qoder','new-api']` | 哪些 DSH provider 视为「free-egg 模型」：这些 provider 的对话底栏常显积分预估，且只有它们计积分 |
 | `catalogBaseCreditsPer1k` | `0` | 目录倍率折算的兜底基线（积分/千 token/倍率单位）；`0` = 只用网关实测台账自动校准 |
 | `qoder` | 无 | Qoder 网关子配置：`baseUrl`、`panelPasswordFile`（面板密码文件）、`panelPassword`（内联兜底）、`enabled`。不配置则不启用 Qoder 来源 |
+| `newApi` | 无 | new-api 管理接口子配置（「积分优先消耗」切换用）：`baseUrl`、`userId`、`accessToken` / `accessTokenFile`、`channels.workbuddy` / `channels.qoder`、`priorities.preferred` / `priorities.fallback`。不配置则功能隐藏 |
 
 ## 每日积分预算（网关层强制）
 
@@ -147,6 +166,29 @@ New-Item -ItemType Junction `
 > 旧网关没有每日预算字段，或 Qoder 面板 `/accounts` 读取失败时，插件自动回落到旧的「今日消耗」
 > 展示（Qoder 会沿用上一次成功拿到的预算值），不会让整次刷新失败。
 
+## 积分优先消耗（平台级）
+
+DeepSeek 请求由本机 new-api（默认 `http://127.0.0.1:3001`）在 WorkBuddy 与 Qoder 两个渠道之间选路。
+插件把它做成一个可切换的选项：设置页「积分优先消耗」两个互斥按钮，或侧边栏标题行的 `WB 优先` /
+`Qoder 优先` chip，点一下即改 new-api 两个渠道的优先级（本机默认 WorkBuddy 渠道 id 13、Qoder 渠道 id 12）：
+
+| 选择 | WorkBuddy 渠道 | Qoder 渠道 | 效果 |
+|---|---|---|---|
+| WorkBuddy 优先（默认原状） | `10` | `5` | DeepSeek 先消耗 WorkBuddy 积分，失败 / 满额才落 Qoder |
+| Qoder 优先 | `5` | `10` | DeepSeek 先消耗 Qoder 积分，拥堵 / 失败 / 满额自动回退 WorkBuddy |
+
+- 切换**即时生效**（new-api 更新后立即重建渠道缓存），只影响新请求；正在进行的对话不受影响。
+- 只改**渠道优先级**，不动两个网关内部的账号池选号（账号仍按余额 / 每日预算由网关自己挑）。
+- 选择持久化在插件状态文件 `<DSH_HOME>/free-egg-credits/routing.json`；真实生效状态按 30 秒缓存从
+  new-api 回读（设置页点刷新会强制重读），若在 new-api 控制台手工改过优先级，设置页会提示
+  「选择与实际不一致」。
+- 需要 new-api 管理凭据（管理员用户的 access token）：插件只从配置 / token 文件读取，不下发浏览器。
+  未配置 `newApi` 时整块 UI 隐藏，插件其余行为不变。
+
+获取 access token：登录 new-api 控制台 → 个人设置 → 系统访问令牌（重新生成会轮换并让旧值立即失效，
+本机可通过 `GET /api/user/token` 触发并拿到新值）。把令牌写进 `accessTokenFile` 指向的文件（推荐，
+文件权限按本机用户最小化）或用 `accessToken` 内联；**不要提交进仓库**。
+
 ## 数据来源
 
 | 数据 | 来源 |
@@ -154,10 +196,11 @@ New-Item -ItemType Junction `
 | WorkBuddy 账号积分 | 网关面板 `GET /panel/api/overview`（`realm=cn` 的账号） |
 | WorkBuddy 签到状态 | 当天首次打开界面时调用一次单号签到接口（`POST /panel/api/accounts/{uid}/checkin`）。上游对重复签到返回 `10001 今天已签到`，幂等无副作用；未签到时顺带完成当天签到 |
 | Qoder 账号积分 | Qoder 网关 `GET /credits/summary`（registered 口径：`credits_remain` / `credits_size`） |
-| Qoder 签到状态 | Qoder 网关 `GET /scheduler`：调度器当天跑过巡检即视为「今日已签到」，`next_run_time` 为下次巡检 |
+| Qoder 签到状态 | Qoder 面板 `GET /accounts` 每个账号的 `lastCheckin`（今天已签到 / 尚未签到 / 今日奖励待领取，含签到时刻）；面板不可用或该账号行缺失时回落 `GET /scheduler` 的 `last_run_time`。签到本身由网关调度器后台完成 |
+| 平台优先消耗 | new-api 管理接口 `GET /api/channel/{id}`（读 priority）与 `PUT /api/channel/`（写 priority）：WorkBuddy 渠道 13 / Qoder 渠道 12；切换后回读校验 |
 | 会话消耗账号 | WorkBuddy 面板 `token_usage.last_used_at` / `last_model`；Qoder 面板 `GET /usage/recent`（`account` / `model` / `at`，3 秒缓存）。每轮回复结束后 Host 侧延迟 1.5 秒刷新两侧网关，按事件时刻就近匹配到该会话；首次匹配后固定，不再换号 |
-| 账号当日消耗 | WorkBuddy：累加两次快照之间的余额下降量（网关按上游 `credit` 扣减账号余额），账本落盘 `<DSH_HOME>/free-egg-credits/daily.json`，重启 DSH 继续算；Qoder：当天 `/usage/recent` 台账的 `credit` 逐条累加（精确值） |
-| 每日积分预算 / 今日已用 | WorkBuddy：面板 `GET /panel/api/overview` 账号行的 `daily_credit_spent` / `daily_credit_limit` / `daily_credit_capped`；Qoder：面板 `GET /accounts`（面板 token 已封装）的 `dailyCreditsToday` / `dailyCreditLimit` / `creditLimitReached`，与 `/credits/summary` 并进同一次刷新（保留 60 秒缓存）。字段缺失（旧网关）时保持 undefined/0/false，界面回落旧的「今日消耗」样式；`/accounts` 失败只让预算字段缺省，不影响 Qoder 积分刷新 |
+| 账号当日消耗 | WorkBuddy：累加两次快照之间的余额下降量（网关按上游 `credit` 扣减账号余额），账本落盘 `<DSH_HOME>/free-egg-credits/daily.json`，重启 DSH 继续算；Qoder：当天 `/usage/recent` 台账中 `billable !== false` 的 `credit` 逐条累加（免费模型行 `billable=false` 不计；缺该字段的旧网关按计费处理） |
+| 每日积分预算 / 今日已用 | WorkBuddy：面板 `GET /panel/api/overview` 账号行的 `daily_credit_spent` / `daily_credit_limit` / `daily_credit_capped`；Qoder：面板 `GET /accounts`（面板 token 已封装）的 `dailyCreditsToday` / `dailyCreditLimit` / `creditLimitReached`，与 `/credits/summary` 并进同一次刷新（保留 60 秒缓存）。Qoder 的 `dailyCreditsToday` 是名义口径（免费调用也累计 `credit`），展示侧改用按 `billable` 过滤后的本地台账；字段缺失（旧网关）时保持 undefined/0/false，界面回落旧的「今日消耗」样式；`/accounts` 失败只让预算字段缺省，不影响 Qoder 积分刷新 |
 | 每轮 token | DSH Session 事件里的 `assistant/message.usage`（Host 侧折叠，不落盘） |
 | 积分单价（WorkBuddy 实测） | 网关账号状态里的 `model_costs[].cost_per_1k`（按样本数加权） |
 | 积分单价（Qoder 实测） | Qoder 面板 `GET /usage` 的 `by_model` 台账：真实 `credit ÷ total_tokens`（含缓存命中折扣），5 分钟缓存 |
@@ -171,27 +214,42 @@ New-Item -ItemType Junction `
 插件分 Host / Client 两半：
 
 - **Host 半（`index.js`）**：`inject: ['webServer']`，在 DSH Web 同源路由 `/__dsh-wb-credits`
-  下注册 5 个接口（`GET /snapshot`、`GET /sessions`、`POST /refresh`、`POST /checkin`、
-  `POST /qoder/checkin`）。负责：读网关面板与模型目录、判定签到、用 `session/event` 与会话日志折叠每轮
+  下注册 6 个接口（`GET /snapshot`、`GET /sessions`、`POST /refresh`、`POST /checkin`、
+  `POST /qoder/checkin`、`POST /preference`）。负责：读网关面板与模型目录、判定签到、用 `session/event` 与会话日志折叠每轮
   token 用量、按 provider 判断是否 free-egg 模型、按「实测单价 → 目录倍率折算 → 配置覆盖」折算积分；
   并在每轮回复结束后刷新 WorkBuddy `token_usage` 与 Qoder `/usage/recent`，按事件时刻把这次消耗
   归属并固定在对应会话（会话 → 账号不再来回切）；同时维护每个账号的「今日消耗」账本
   （WorkBuddy 余额差值 + 落盘续算，Qoder 台账精确累加），并映射网关侧的每日积分预算字段
   （WB `/panel/api/overview`；Qoder `/accounts`，best-effort 且失败保留上次值），供侧边栏展示。
-  密钥、面板密码、token 全部只在这个进程内使用。
+  「积分优先消耗」切换会通过 new-api 管理接口读写渠道优先级（access token 只在 Host 内使用），
+  选择落盘、真实状态每次快照回读。密钥、面板密码、token 全部只在这个进程内使用。
 - **Client 半（`client.js`）**：手写 `window.__ModuleLoader__` bundle，向 `sidebar.footer.action`、
   `conversation.composer.dock`、`conversation.chat.turnTail`、`settings.section` 四个席位注入 React 组件，
   只从上面的同源路由取数据。界面沿用宿主 CSS 变量（`--dsw-alias-*`），不引入独立样式体系。
 
-签到是「探测式」的：当天第一次打开界面时对未签到的账号调用一次幂等签到接口，据返回判定状态；
-不想让插件自动补签时把 `autoCheckin` 设为 `false`，此时状态可能显示未知，可在设置页手动点「立即签到」。
+签到是「网关后台自动 + 插件兜底」两层：
+
+- **WorkBuddy / Qoder 网关各自带后台调度器，不依赖 DSH 是否打开**：WorkBuddy 按
+  `schedule.checkin_hours`（默认 `09:00` / `21:00`）自动签到；Qoder 调度器按
+  `09:00` / `10:15` / `10:45` / `21:00` 自动巡检签到并领取活动积分（`next_run_time` 可在快照里看到；
+  10:15 与 10:45 是针对「当天活动 10:00 刷新后上游下发延迟」的两次重试窗口）。
+- 插件的 `autoCheckin` 只做**打开界面时的幂等补签与状态核对**：WorkBuddy 对未签到的账号调用一次
+  单号签到接口（上游对「今天已签到」返回 `10001`，无副作用）；Qoder 侧不自动触发签到，只读面板
+  `lastCheckin` 展示状态，需要补签时点设置页「立即签到」。
+- Qoder 的「签到」= 领取每日活动（每日 `10:00`（UTC+8）开新一轮）。如果 `lastCheckin` 早于当天
+  10:00、而当前已过 10:00，插件显示**黄点「今日奖励待领取」**而不是绿点——09:00 的调度器可能只是
+  给「昨天那批已领」盖了章，当天 100 Credits 要到 21:00 那轮（或手动「立即签到」）才真正到账。
+- 不想让插件补签时把 `autoCheckin` 设为 `false`，此时 WorkBuddy 状态可能显示未知，可在设置页手动签到。
+- 注意「已签到」≠「当天积分已到账」：积分余额以网关写回为准；Qoder 的每日活动按 `10:00`（UTC+8）
+  刷新和领取，调度器在那之前跑过时可能先盖上「已签到」，当天的 100 积分要等下一轮领取。
 
 ## 隐私与安全
 
-- **无遥测**：插件只访问配置里写的本机网关地址，不向任何第三方服务发请求。
+- **无遥测**：插件只访问配置里写的本机网关地址与 new-api 地址，不向任何第三方服务发请求。
 - **凭据不出 Host**：WorkBuddy `api_key` 从网关 `config.json` 读取，Qoder 面板密码从密码文件读取，
-  都不会出现在浏览器拿到的快照里。
-- **接口不代理任意 URL**：签到接口只接受快照里已存在的账号 uid。
+  new-api 管理 access token 从配置或 token 文件读取，都不会出现在浏览器拿到的快照里。
+- **接口不代理任意 URL**：签到接口只接受快照里已存在的账号 uid；优先消耗接口只接受
+  `workbuddy` / `qoder` 两个枚举值，且只改配置里写死的两个渠道 id。
 - 插件路由依赖 DSH 自身的登录认证；**不要把 DSH 端口在没有认证层的情况下暴露到公网**。
 
 发现安全问题请按 [SECURITY.md](SECURITY.md) 私密报告。
@@ -205,13 +263,22 @@ New-Item -ItemType Junction `
 - 未实测模型的单价是**倍率折算的估算值**：两台网关各自用本机实测数据校准，换模型 / 上游调价后可能有偏差；配置 `creditsPer1k` 可精确覆盖。
 - Qoder 实测单价包含缓存命中的折扣（本项目实测一度有 98% 输入命中缓存），是「该模型近期实际平均」；同一模型换用法（缓存比例变化）会带来偏差。
 - free-egg 聚合别名的自动匹配按「去版本号归一」进行，跨网关同名家族（如 DeepSeek-Flash / deepseek-v4.1-flash）能对上；若有歧义，用 `creditsPer1k` 显式指定。
-- 签到状态依赖一次幂等的签到调用；关闭 `autoCheckin` 后状态可能为「未知」。
+- 签到状态以网关为准：WorkBuddy 来自一次幂等签到调用的返回，Qoder 来自面板 `lastCheckin`；
+  「已签到」不代表当天奖励积分一定已到账（见上文「已签到 ≠ 当天积分已到账」）。关闭 `autoCheckin` 后
+  WorkBuddy 状态可能为「未知」。
 - Qoder 积分为上游 registered 口径（`credits_remain` / `credits_size`），签到或消费后由网关写回；
   快照缓存 60 秒，设置页点刷新可强制重拉。
 - 每日积分预算的**强制**在网关侧：插件只读展示，不参与选号或拦截。旧网关没有预算字段、或
   Qoder 面板 `/accounts` 不可用时，界面回到 1.3.0 的「今日消耗」样式（Qoder 沿用上次成功值）；
   Qoder 面板 `/accounts` 默认只返回当前域的账号，跨域账号可能拿不到预算数据。
+- 「积分优先消耗」的切换改的是 new-api 渠道优先级，需要管理员 access token；token 轮换/失效后
+  切换会失败并在设置页提示（更新 `accessTokenFile` 即可，Host 会按文件 mtime 重读）。如果 new-api
+  里两个渠道 id 不是默认的 13/12，需要按实际配置 `channels`。渠道优先级被别的进程改过时，
+  界面会显示「选择与实际不一致」，以实际状态为准。若某渠道被 new-api 自动禁用，插件只改优先级、
+  不会替你启用渠道，需要到 new-api 控制台手动启用。
 - 契合最新 DSH 的 `slots` / `webServer` / `session/event` 机制；DSH 大版本改动后可能需要跟进适配。
+- 「积分优先消耗」是 1.5.0 新增的 Host 能力：升级后需要**重启 DSH** 才出现（只刷新页面的话 UI 会
+  随 `routing` 字段缺失自动隐藏）。
 
 ## 开发与贡献
 

@@ -40,6 +40,26 @@ window.__ModuleLoader__.load({
       'checkin.fresh': '今日已签到（本次补签）',
       'checkin.failed': '签到失败：{message}',
       'checkin.unknown': '今日签到状态未知',
+      'checkin.pending': '今日尚未签到',
+      // 积分优先消耗（平台级）：切换 new-api 渠道优先级，决定 DeepSeek 请求先走哪个平台
+      'routing.title': '积分优先消耗',
+      'routing.desc': '决定 DeepSeek 请求优先消耗哪个平台的积分，另一个平台作为故障回退。Qoder 服务器拥堵时可切回 WorkBuddy。',
+      'routing.workbuddy': 'WorkBuddy 优先',
+      'routing.qoder': 'Qoder 优先',
+      'routing.actual.workbuddy': 'WorkBuddy 优先',
+      'routing.actual.qoder': 'Qoder 优先',
+      'routing.actual.tie': '两个渠道同级',
+      'routing.actual.none': '未知',
+      'routing.current': '当前实际：{actual}（WB 渠道 {wb} · Qoder 渠道 {qoder}）',
+      'routing.mismatch': '已选择「{mode}」，但实际优先级是「{actual}」，可能被其他进程改过。',
+      'routing.unavailable': '无法读取 new-api 渠道优先级：{message}',
+      'routing.applying': '切换中…',
+      'routing.failed': '切换失败：{message}',
+      'routing.hint': '优先平台 = 提高该平台在 new-api 里的渠道优先级；拥堵或报错时新请求会自动回退到另一平台。切换即时生效，只影响新请求。',
+      'routing.sidebar.short.workbuddy': 'WB 优先',
+      'routing.sidebar.short.qoder': 'Qoder 优先',
+      'routing.sidebar.switchTo': '消耗优先级：{actual}（点击切换为「{next}」优先）',
+      'routing.sidebar.applyFailed': '切换失败：{message}',
       'turn.credits': '本轮 ≈{credits} 积分',
       'turn.free': '本轮未计积分',
       'turn.title': '本轮 {tokens} tokens · {models}',
@@ -119,6 +139,26 @@ window.__ModuleLoader__.load({
       'checkin.fresh': 'Checked in just now',
       'checkin.failed': 'Check-in failed: {message}',
       'checkin.unknown': 'Check-in state unknown',
+      'checkin.pending': 'Not checked in yet today',
+      // Credit priority (platform level): flips new-api channel priorities, i.e. which platform serves DeepSeek first
+      'routing.title': 'Credit priority',
+      'routing.desc': 'Choose which platform’s credits DeepSeek requests spend first; the other platform stays as failover. Switch back to WorkBuddy when Qoder is congested.',
+      'routing.workbuddy': 'Prefer WorkBuddy',
+      'routing.qoder': 'Prefer Qoder',
+      'routing.actual.workbuddy': 'WorkBuddy first',
+      'routing.actual.qoder': 'Qoder first',
+      'routing.actual.tie': 'Both channels tied',
+      'routing.actual.none': 'Unknown',
+      'routing.current': 'Effective now: {actual} (WB channel {wb} · Qoder channel {qoder})',
+      'routing.mismatch': 'Selected “{mode}” but the effective priority is “{actual}” — another process may have changed it.',
+      'routing.unavailable': 'Cannot read new-api channel priorities: {message}',
+      'routing.applying': 'Switching…',
+      'routing.failed': 'Switch failed: {message}',
+      'routing.hint': 'Preferred platform = higher new-api channel priority; if it is congested or failing, new requests fall back to the other platform. Applies to new requests only.',
+      'routing.sidebar.short.workbuddy': 'WB first',
+      'routing.sidebar.short.qoder': 'Qoder first',
+      'routing.sidebar.switchTo': 'Credit priority: {actual} (click to prefer {next})',
+      'routing.sidebar.applyFailed': 'Switch failed: {message}',
       'turn.credits': 'This turn ≈{credits} credits',
       'turn.free': 'This turn cost no credits',
       'turn.title': 'This turn {tokens} tokens · {models}',
@@ -552,6 +592,11 @@ window.__ModuleLoader__.load({
       '.wbcd-side-refresh{border:none;background:transparent;color:var(--dsw-alias-label-secondary);padding:2px;border-radius:4px;cursor:pointer;display:inline-flex;line-height:0;flex:none}',
       '.wbcd-side-refresh:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}',
       '.wbcd-side-refresh:disabled{opacity:.45;cursor:default}',
+      // 侧边栏标题行的「消耗优先级」紧凑切换 chip（点击切到另一个平台）
+      '.wbcd-side-routing{flex:none;display:inline-flex;align-items:center;font-size:10px;line-height:14px;padding:0 5px;border-radius:4px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;white-space:nowrap}',
+      '.wbcd-side-routing:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}',
+      '.wbcd-side-routing:disabled{opacity:.5;cursor:default}',
+      '.wbcd-side-routing-err{font-size:10px;line-height:14px;color:var(--dsw-alias-state-error-primary)}',
       '.wbcd-side-row{display:flex;align-items:center;gap:6px;min-width:0;padding:0 4px;margin:0 -4px;border-radius:6px;transition:background-color .15s ease}',
       '.wbcd-side-row.is-active{background:rgba(127,127,127,.18);box-shadow:inset 0 0 0 1px rgba(127,127,127,.12)}',
       // 主题可能没有定义 bg-layer-2（会出现“只有加粗、没有灰底”），这里用不受主题影响的
@@ -590,6 +635,10 @@ window.__ModuleLoader__.load({
       '.wbcd-btn{border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-primary);border-radius:8px;padding:4px 10px;font:inherit;font-size:12px;cursor:pointer;line-height:18px}',
       '.wbcd-btn:hover{background:var(--dsw-alias-bg-layer-2)}',
       '.wbcd-btn:disabled{opacity:.5;cursor:default}',
+      // 优先消耗：互斥平台按钮的选中态（绿色边框 + 绿色文字，沿用宿主状态色）
+      '.wbcd-btn.is-active{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary);font-weight:600}',
+      '.wbcd-routing-options{display:flex;gap:8px;flex-wrap:wrap;align-items:center}',
+      '.wbcd-routing-meta{font-size:12px;color:var(--dsw-alias-label-secondary);display:flex;gap:10px;flex-wrap:wrap;align-items:center}',
       '.wbcd-table{width:100%;border-collapse:collapse;font-size:12px}',
       '.wbcd-table th,.wbcd-table td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--dsw-alias-border-l1);white-space:nowrap}',
       '.wbcd-table th{color:var(--dsw-alias-label-secondary);font-weight:500}',
@@ -624,7 +673,54 @@ window.__ModuleLoader__.load({
           record,
         }
       }
+      // 已知今天还没签到（Qoder 面板 lastCheckin 不是今天）：黄点 + 明确文案，
+      // 不再和「状态未知」混在一起。
+      if (record.state === 'pending') {
+        const text = record.message ? shorten(record.message, 80) : translateWith(t, 'checkin.pending', '今日尚未签到')
+        return { state: 'unknown', text, record }
+      }
       return { state: 'unknown', text: translateWith(t, 'checkin.unknown', '今日签到状态未知'), record }
+    }
+
+    // -----------------------------------------------------------------------
+    // 积分优先消耗（平台级，Host 通过 new-api 渠道优先级实现）
+    // -----------------------------------------------------------------------
+
+    /** Host 未升级 / 未配置 newApi 时快照没有 routing 字段：整块隐藏，不报错。 */
+    function routingView(data) {
+      const routing = data && data.routing
+      return routing && routing.enabled === true ? routing : null
+    }
+
+    /** 当前生效的优先平台（'workbuddy' | 'qoder' | ''）：actualMode 优先，回落用户选择。 */
+    function routingMode(routing) {
+      const actual = routing && typeof routing.actualMode === 'string' ? routing.actualMode : ''
+      if (actual === 'workbuddy' || actual === 'qoder') return actual
+      const desired = routing && typeof routing.mode === 'string' ? routing.mode : ''
+      return desired === 'workbuddy' || desired === 'qoder' ? desired : ''
+    }
+
+    function routingActualLabel(routing, tr) {
+      const actual = routing && routing.actualMode
+      if (actual === 'workbuddy') return tr('routing.actual.workbuddy', 'WorkBuddy 优先')
+      if (actual === 'qoder') return tr('routing.actual.qoder', 'Qoder 优先')
+      if (actual === 'tie') return tr('routing.actual.tie', '两个渠道同级')
+      return tr('routing.actual.none', '未知')
+    }
+
+    /** 渠道优先级（快照缺失字段时回落到配置里的期望值）。 */
+    function routingPriorities(routing) {
+      const channels = (routing && routing.channels) || {}
+      const wb = channels.workbuddy && Number.isFinite(Number(channels.workbuddy.priority))
+        ? Number(channels.workbuddy.priority)
+        : Number(routing && routing.preferredPriority)
+      const qoder = channels.qoder && Number.isFinite(Number(channels.qoder.priority))
+        ? Number(channels.qoder.priority)
+        : Number(routing && routing.fallbackPriority)
+      return {
+        workbuddy: Number.isFinite(wb) ? wb : '—',
+        qoder: Number.isFinite(qoder) ? qoder : '—',
+      }
     }
 
     function accountTitle(account, t) {
@@ -696,6 +792,7 @@ window.__ModuleLoader__.load({
       const data = state.data
       const [busy, setBusy] = React.useState(false)
       const wide = props.wide !== false
+      const tr = (key, fallback, vars) => translateWith(props.t, key, fallback, vars)
 
       const onRefresh = React.useCallback(() => {
         if (busy) return
@@ -705,6 +802,35 @@ window.__ModuleLoader__.load({
           .then(() => store.refresh())
           .finally(() => setBusy(false))
       }, [busy])
+
+      // 平台优先消耗：标题行 chip 点击切到另一个平台（Host 侧改 new-api 渠道优先级）。
+      // Host 未升级/未配置 newApi 时快照没有 routing 字段，整个控件不渲染。
+      const routing = routingView(data)
+      const [routingBusy, setRoutingBusy] = React.useState(false)
+      const [routingError, setRoutingError] = React.useState('')
+      const routingTarget = routingMode(routing) === 'qoder' ? 'workbuddy' : 'qoder'
+      const onSwitchRouting = React.useCallback(() => {
+        if (routingBusy) return
+        setRoutingBusy(true)
+        setRoutingError('')
+        fetch(API + '/preference?mode=' + encodeURIComponent(routingTarget), { method: 'POST', cache: 'no-store' })
+          .then(async response => {
+            const text = await response.text()
+            if (!response.ok) throw new Error('HTTP ' + response.status + ': ' + text.slice(0, 120))
+            let payload = null
+            try {
+              payload = JSON.parse(text)
+            } catch {
+              // 旧 Host / 空响应：按成功处理，状态交给下一次快照
+            }
+            if (payload && payload.ok === false) throw new Error(payload.error || 'switch failed')
+          })
+          .catch(error => setRoutingError(error && error.message ? error.message : String(error)))
+          .finally(() => {
+            setRoutingBusy(false)
+            store.refresh()
+          })
+      }, [routingBusy, routingTarget])
 
       // 布局：dsh-mobile 的「移动访问」按钮和本插件同占 sidebar.footer.action（一行 flex）。
       // 用户要它停在侧边栏底部的账户行右侧，账户行上方只留 WorkBuddy 积分块。
@@ -853,6 +979,28 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'wbcd-side-head' },
           h('span', { className: 'wbcd-side-title' }, translateWith(props.t, 'sidebar.title', 'Free Egg 积分')),
+          routing && routing.available
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'wbcd-side-routing',
+                  disabled: routingBusy,
+                  title: tr('routing.sidebar.switchTo', '消耗优先级：{actual}（点击切换为「{next}」优先）', {
+                    actual: routingActualLabel(routing, tr),
+                    next: routingTarget === 'qoder'
+                      ? tr('routing.actual.qoder', 'Qoder 优先')
+                      : tr('routing.actual.workbuddy', 'WorkBuddy 优先'),
+                  }),
+                  onClick: onSwitchRouting,
+                },
+                routingBusy
+                  ? '…'
+                  : routingMode(routing) === 'qoder'
+                    ? tr('routing.sidebar.short.qoder', 'Qoder 优先')
+                    : tr('routing.sidebar.short.workbuddy', 'WB 优先'),
+              )
+            : null,
           h(
             'button',
             {
@@ -866,6 +1014,13 @@ window.__ModuleLoader__.load({
             h(RefreshIcon),
           ),
         ),
+        routingError
+          ? h(
+              'div',
+              { className: 'wbcd-side-routing-err', title: routingError },
+              tr('routing.sidebar.applyFailed', '切换失败：{message}', { message: shorten(routingError, 60) }),
+            )
+          : null,
         ...rows.map(({ key, account, source }) => {
           const limitMs = limitResetMs(account)
           const limited = source === 'workbuddy' && rateLimitRows(account).length > 0
@@ -1053,6 +1208,7 @@ window.__ModuleLoader__.load({
       const [recent, setRecent] = React.useState(null)
       const [recentError, setRecentError] = React.useState('')
       const [busy, setBusy] = React.useState('')
+      const [routingBusy, setRoutingBusy] = React.useState('')
       const [notice, setNotice] = React.useState('')
 
       const loadRecent = React.useCallback(() => {
@@ -1087,6 +1243,9 @@ window.__ModuleLoader__.load({
       ]
       // 全部账号都满额时在页面顶部给一行提示（没有满额或旧快照不显示）
       const allCapped = allAccountsCapped(accountRows)
+      // 平台优先消耗：Host 未升级/未配置 newApi 时为空，整块隐藏
+      const routing = routingView(data)
+      const routingPri = routingPriorities(routing)
 
       const runAction = React.useCallback(
         (label, path) => {
@@ -1112,6 +1271,39 @@ window.__ModuleLoader__.load({
         },
         [loadRecent, tr],
       )
+
+      /**
+       * 平台优先消耗切换：POST /preference?mode=workbuddy|qoder。
+       * Host 会改 new-api 两个渠道的优先级，成功后 store.refresh() 回读真实状态。
+       */
+      const runRouting = mode => {
+        if (routingBusy) return
+        setRoutingBusy(mode)
+        setNotice('')
+        fetch(API + '/preference?mode=' + encodeURIComponent(mode), { method: 'POST', cache: 'no-store' })
+          .then(async response => {
+            const text = await response.text()
+            if (!response.ok) throw new Error('HTTP ' + response.status + ': ' + text.slice(0, 160))
+            let payload = null
+            try {
+              payload = JSON.parse(text)
+            } catch {
+              // 旧 Host / 空响应：状态交给下一次快照判定
+            }
+            if (payload && payload.ok === false) throw new Error(payload.error || 'switch failed')
+          })
+          .catch(error =>
+            setNotice(
+              tr('routing.failed', '切换失败：{message}', {
+                message: error && error.message ? error.message : String(error),
+              }),
+            ),
+          )
+          .finally(() => {
+            setRoutingBusy('')
+            store.refresh()
+          })
+      }
 
       const priceLine = (() => {
         if (!gateway) return null
@@ -1309,6 +1501,69 @@ window.__ModuleLoader__.load({
             ? h('span', { className: 'wbcd-notice wbcd-bad' }, gateway.error || tr('dock.error', 'WorkBuddy 网关未连接'))
             : null,
         ),
+        routing
+          ? h(
+              'div',
+              null,
+              h('div', { className: 'wbcd-section-title' }, tr('routing.title', '积分优先消耗')),
+              h('div', { className: 'wbcd-hint' }, tr('routing.desc', '决定 DeepSeek 请求优先消耗哪个平台的积分，另一个平台作为故障回退。')),
+              routing.available
+                ? h(
+                    'div',
+                    { className: 'wbcd-routing-options' },
+                    ...['workbuddy', 'qoder'].map(mode =>
+                      h(
+                        'button',
+                        {
+                          key: 'routing-' + mode,
+                          type: 'button',
+                          className: 'wbcd-btn' + (routing.actualMode === mode ? ' is-active' : ''),
+                          disabled: routingBusy !== '' || busy !== '',
+                          onClick: () => runRouting(mode),
+                        },
+                        routingBusy === mode
+                          ? tr('routing.applying', '切换中…')
+                          : tr(
+                              mode === 'qoder' ? 'routing.qoder' : 'routing.workbuddy',
+                              mode === 'qoder' ? 'Qoder 优先' : 'WorkBuddy 优先',
+                            ),
+                      ),
+                    ),
+                  )
+                : h(
+                    'div',
+                    { className: 'wbcd-notice wbcd-bad' },
+                    tr('routing.unavailable', '无法读取 new-api 渠道优先级：{message}', {
+                      message: routing.error || '—',
+                    }),
+                  ),
+              routing.available
+                ? h(
+                    'div',
+                    { className: 'wbcd-routing-meta' },
+                    tr('routing.current', '当前实际：{actual}（WB 渠道 {wb} · Qoder 渠道 {qoder}）', {
+                      actual: routingActualLabel(routing, tr),
+                      wb: routingPri.workbuddy,
+                      qoder: routingPri.qoder,
+                    }),
+                  )
+                : null,
+              routing.available && routing.mode && routing.actualMode && routing.mode !== routing.actualMode
+                ? h(
+                    'div',
+                    { className: 'wbcd-notice wbcd-bad' },
+                    tr('routing.mismatch', '已选择「{mode}」，但实际优先级是「{actual}」，可能被其他进程改过。', {
+                      mode:
+                        routing.mode === 'qoder'
+                          ? tr('routing.qoder', 'Qoder 优先')
+                          : tr('routing.workbuddy', 'WorkBuddy 优先'),
+                      actual: routingActualLabel(routing, tr),
+                    }),
+                  )
+                : null,
+              h('div', { className: 'wbcd-hint' }, tr('routing.hint', '优先平台 = 提高该平台在 new-api 里的渠道优先级；拥堵或报错时新请求会自动回退到另一平台。切换即时生效，只影响新请求。')),
+            )
+          : null,
         gateway && priceLine ? h('div', { className: 'wbcd-sub' }, h('span', null, tr('settings.price', '折算单价') + '：' + priceLine)) : null,
         notice ? h('div', { className: 'wbcd-notice wbcd-bad' }, notice) : null,
         h(

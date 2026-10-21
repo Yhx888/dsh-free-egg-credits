@@ -38,6 +38,8 @@ const DEFAULTS = {
   // 目录倍率折算的兜底基线（积分/千 token/倍率单位）；0 = 只用实测台账自动校准。
   catalogBaseCreditsPer1k: 0,
   qoder: null,
+  // new-api 管理面：配置后可在设置页切换「积分优先消耗平台」（改两个渠道的优先级）
+  newApi: null,
 }
 
 /** 包目录上两级的 config.json 是开发期默认网关配置位置（bundle 以链接方式安装时有效）。 */
@@ -90,6 +92,41 @@ async function saveDailyState(daily) {
   await rename(tmp, DAILY_STATE_PATH)
 }
 
+/**
+ * 优先消耗平台落盘路径：<DSH_HOME>/free-egg-credits/routing.json。
+ * 只保存用户期望的优先平台；渠道优先级数字以 new-api 为准，不重复落盘。
+ */
+const ROUTING_STATE_PATH = (() => {
+  try {
+    const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+    return join(home, 'free-egg-credits', 'routing.json')
+  } catch {
+    return ''
+  }
+})()
+
+/** 读优先平台（同步读，启动时只读一次；文件不存在/损坏/取值非法一律视为没设置）。 */
+function loadRoutingMode() {
+  if (!ROUTING_STATE_PATH) return ''
+  try {
+    const data = JSON.parse(readFileSync(ROUTING_STATE_PATH, 'utf8'))
+    const mode = data && typeof data.mode === 'string' ? data.mode : ''
+    return mode === 'workbuddy' || mode === 'qoder' ? mode : ''
+  } catch {
+    return ''
+  }
+}
+
+/** 原子写优先平台（tmp + rename）；失败只影响重启后的记忆，不影响本次切换结果。 */
+async function saveRoutingMode(mode) {
+  if (!ROUTING_STATE_PATH || !mode) return
+  const payload = JSON.stringify({ mode, updatedAt: new Date().toISOString() })
+  const tmp = ROUTING_STATE_PATH + '.tmp'
+  await mkdir(dirname(ROUTING_STATE_PATH), { recursive: true })
+  await writeFile(tmp, payload, 'utf8')
+  await rename(tmp, ROUTING_STATE_PATH)
+}
+
 export function apply(ctx, rawConfig = {}) {
   const opts = normalizeConfig(rawConfig)
   const state = createState(loadDailyState())
@@ -99,6 +136,10 @@ export function apply(ctx, rawConfig = {}) {
   const qoderGateway = opts.qoder ? createQoderGateway(opts, log) : null
   const ledger = createLedger(ctx, log)
   const checkin = createCheckin(opts, gateway, state, log)
+  // new-api 渠道优先级（平台优先消耗切换）只在配置了 newApi 时启用；
+  // 状态对象挂到 state.routing 上供快照读取，未配置时快照里只有 {enabled:false}。
+  const routing = opts.newApi ? createRouting(opts, log) : null
+  if (routing) state.routing = routing
 
   // ---- 会话 → 消耗账号归属 ------------------------------------------------
   // 每个会话单独固定一个「承载账号」：一轮回复结束后按事件时刻就近匹配网关最近请求，
@@ -228,6 +269,13 @@ export function apply(ctx, rawConfig = {}) {
     const sessionId = requestedSessionId || state.lastSessionId || ''
     await refresh(false)
     await refreshQoderActivity(state, qoderGateway, log, false)
+    if (routing) {
+      try {
+        await routing.status(false)
+      } catch {
+        // 渠道优先级只是附加信息，读取失败不能拖垮快照
+      }
+    }
     await checkin.maybeAuto(6000)
     if (sessionId) await ledger.ensure(sessionId)
     sendJson(res, 200, buildPayload(state, ledger, opts, sessionId, requestedSessionId))
@@ -255,6 +303,7 @@ export function apply(ctx, rawConfig = {}) {
     state.recentCache = null
     await refresh(true)
     await refreshQoderActivity(state, qoderGateway, log, true)
+    if (routing) await routing.status(true)
     await checkin.maybeAuto(8000)
     sendJson(res, 200, { ok: true, online: state.online, error: state.error })
   }
@@ -311,11 +360,26 @@ export function apply(ctx, rawConfig = {}) {
     })
   }
 
+  async function handlePreference(req, res) {
+    if ((req.method || '').toUpperCase() !== 'POST') {
+      sendJson(res, 405, { ok: false, error: 'method_not_allowed' })
+      return
+    }
+    if (!routing) {
+      sendJson(res, 200, { ok: false, error: 'new_api_disabled' })
+      return
+    }
+    const url = new URL(req.url || '/', 'http://localhost')
+    const result = await routing.apply(url.searchParams.get('mode') || '')
+    sendJson(res, 200, result)
+  }
+
   route('/snapshot', handleSnapshot)
   route('/sessions', handleSessions)
   route('/refresh', handleRefresh)
   route('/checkin', handleCheckin)
   route('/qoder/checkin', handleQoderCheckin)
+  route('/preference', handlePreference)
 
   log(`已挂载：网关 ${opts.gatewayBaseUrl}，账号域 ${opts.realms.join(',')}`)
 }
@@ -343,6 +407,8 @@ function normalizeConfig(raw) {
     catalogBaseCreditsPer1k: Math.max(0, toNumber(source.catalogBaseCreditsPer1k) || 0),
     // Qoder 反代网关（qoder2api-hub）：null = 未配置不启用
     qoder: normalizeQoder(source.qoder),
+    // new-api 管理面（平台优先消耗切换）：null = 未配置不启用
+    newApi: normalizeNewApi(source.newApi),
   }
 }
 
@@ -367,6 +433,34 @@ function normalizeQoder(raw) {
     panelPasswordFile: passwordFile,
     panelPassword: password,
     enabled: raw.enabled !== false,
+  }
+}
+
+/**
+ * new-api 管理面子配置：只认 baseUrl / userId / token / channels / priorities。
+ * 没有 baseUrl 视为未配置（返回 null），功能整体关闭。
+ * token 只从配置或文件读，绝不写死在代码里。
+ */
+function normalizeNewApi(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const baseUrl = trimSlash(String(raw.baseUrl || '')).trim()
+  if (!baseUrl) return null
+  const channels = raw.channels && typeof raw.channels === 'object' ? raw.channels : {}
+  const priorities = raw.priorities && typeof raw.priorities === 'object' ? raw.priorities : {}
+  // new-api 的 PUT 是 GORM 部分更新，零值字段会被跳过：fallback 至少 1；
+  // preferred 必须严格高于 fallback，否则「谁优先」无从判断。
+  const preferred = clampInt(priorities.preferred, 2, 1_000_000, 10)
+  const fallback = clampInt(priorities.fallback, 1, preferred - 1, Math.min(5, preferred - 1))
+  return {
+    baseUrl,
+    userId: clampInt(raw.userId, 1, 1_000_000, 1),
+    accessToken: String(raw.accessToken || '').trim(),
+    accessTokenFile: String(raw.accessTokenFile || '').trim(),
+    channels: {
+      workbuddy: clampInt(channels.workbuddy, 1, 1_000_000, 13),
+      qoder: clampInt(channels.qoder, 1, 1_000_000, 12),
+    },
+    priorities: { preferred, fallback },
   }
 }
 
@@ -629,9 +723,9 @@ function createQoderGateway(opts, log) {
 }
 
 /**
- * Qoder 调度器状态 → 与 WorkBuddy 同形的签到记录。
- * 网关调度器每日多次巡检签到（默认 09:00/21:00，本机加装了 10:05 窗口）；
- * 当天跑过即视为「今日已签到」。
+ * Qoder 调度器状态 → 与 WorkBuddy 同形的签到记录（兜底口径）。
+ * 网关调度器每日多次巡检签到（默认 09:00/21:00，本机加装了 10:15/10:45 窗口）；
+ * 当天跑过即视为「今日已签到」。账号行自带 lastCheckin 时优先用那个。
  */
 function qoderCheckinView(scheduler) {
   if (!scheduler || typeof scheduler !== 'object') return null
@@ -647,6 +741,54 @@ function qoderCheckinView(scheduler) {
     message: sameDay ? '今日已签到（调度器自动领取）' : '今日尚未到签到时间',
     fresh: false,
     nextAt: typeof scheduler.next_run_time === 'string' ? scheduler.next_run_time : '',
+  }
+}
+
+/** Qoder 每日活动奖励窗口的开启时刻（本机本地时间 10:00，活动按 UTC+8 刷新）。 */
+const QODER_REWARD_OPEN_HOUR = 10
+
+/**
+ * 单个 Qoder 账号的签到状态：面板 /accounts 行自带 lastCheckin（逐账号真实签到时间），
+ * 优先用它；行缺失 / 没有该字段时才回落到调度器口径。
+ * 旧口径「调度器今天跑过 = 所有账号绿」会把没签到的账号也显示成已签到。
+ * 10:00 边界：lastCheckin 只是本地盖章，10:00 前巡检看到的是昨天批次已领，
+ * 会盖成今天 09:xx，不代表今天的活动奖励已领，要显示「待领取」而不是绿点。
+ */
+function qoderAccountCheckin(panelRow, scheduler) {
+  const last = panelRow && typeof panelRow.lastCheckin === 'string' ? panelRow.lastCheckin.trim() : ''
+  const at = last ? parseGatewayTime(last) : null
+  if (!at) return qoderCheckinView(scheduler)
+  const checked = dateKey(at) === dateKey()
+  const nextAt = scheduler && typeof scheduler.next_run_time === 'string' ? scheduler.next_run_time : ''
+  if (!checked) {
+    return {
+      date: dateKey(at),
+      at: at.toISOString(),
+      state: 'pending',
+      message: '今日尚未签到',
+      fresh: false,
+      nextAt,
+    }
+  }
+  const now = new Date()
+  const windowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), QODER_REWARD_OPEN_HOUR)
+  if (now.getTime() >= windowStart.getTime() && at.getTime() < windowStart.getTime()) {
+    return {
+      date: dateKey(at),
+      at: at.toISOString(),
+      state: 'pending',
+      message: '今日奖励待领取（每日 10:00 开放，网关 21:00 自动补领）',
+      fresh: false,
+      nextAt,
+    }
+  }
+  return {
+    date: dateKey(at),
+    at: at.toISOString(),
+    state: 'checked',
+    message: '今日已签到（网关自动）',
+    fresh: false,
+    nextAt,
   }
 }
 
@@ -753,8 +895,8 @@ async function refreshQoder(state, gateway, opts, log) {
           degradeUntil: '',
           consecutiveFails: 0,
           modelCosts: [],
-          // 签到状态与 WorkBuddy 对齐：调度器最近一次巡检即当日签到
-          checkin: qoderCheckinView(scheduler),
+          // 签到状态按账号：面板 lastCheckin 优先，缺失时回落调度器口径
+          checkin: qoderAccountCheckin(panelRow, scheduler),
           // 每日预算统一字段：本次 /accounts 无该行（或接口失败）时保持上一次的值，
           // 从未拿到过则 undefined/0，展示侧回落旧的「今日消耗」口径。
           dailyCreditSpent: panelRow ? optionalNumber(panelRow.dailyCreditsToday) : previous ? previous.dailyCreditSpent : undefined,
@@ -813,7 +955,7 @@ function createDailyState() {
   return {
     date: dateKey(),
     workbuddy: new Map(),   // uid → 当日已消耗积分（余额差值累计）
-    qoder: new Map(),       // uid → 当日已消耗积分（用量台账 credit 累加，精确）
+    qoder: new Map(),       // uid → 当日已扣积分（台账 credit 累加；billable=false 的免费调用不计）
     wbCredits: new Map(),   // uid → 上次看到的余额（差值基线）
     qoderLoaded: false,
     qoderSeen: new Set(),
@@ -894,7 +1036,9 @@ async function refreshQoderActivity(state, qoderGateway, log, force) {
       const key = account + '|' + at + '|' + (row.total_tokens || 0)
       if (!daily.qoderSeen.has(key)) {
         daily.qoderSeen.add(key)
-        const credit = Number(row.credit)
+        // 免费模型（billable=false）只记名义 credit、不扣积分，不能计入今日消耗；
+        // 旧网关没有 billable 字段时按计费处理，保持原口径。
+        const credit = row.billable === false ? 0 : Number(row.credit)
         if (Number.isFinite(credit) && credit > 0) {
           daily.qoder.set(account, (daily.qoder.get(account) || 0) + credit)
         }
@@ -917,6 +1061,254 @@ async function refreshQoderActivity(state, qoderGateway, log, force) {
     state.activity.qoderFetchedAt = now + QODER_ACTIVITY_RETRY_MS
     log('读取 Qoder 最近用量失败', error)
   }
+}
+
+// ---------------------------------------------------------------------------
+// new-api 管理面：积分优先消耗平台（渠道优先级）
+// ---------------------------------------------------------------------------
+
+/** 渠道优先级状态的缓存时长：页面轮询每 30 秒最多问一次 new-api。 */
+const ROUTING_TTL_MS = 30_000
+
+/**
+ * new-api 管理 API 客户端。
+ * 管理接口要两个头：Authorization: Bearer <access_token> + New-Api-User: <userId>。
+ * token 读取策略与 Qoder 面板密码一致：文件优先（mtime 变化重读），inline 兜底；
+ * 任何日志都不输出 token 本身。
+ */
+function createNewApiClient(newApi, log) {
+  let tokenCache = ''
+  let tokenFileMtime = 0
+  let tokenMtimeChecked = false
+
+  async function accessToken() {
+    if (newApi.accessTokenFile) {
+      try {
+        const info = await stat(newApi.accessTokenFile)
+        if (tokenCache && tokenMtimeChecked && info.mtimeMs === tokenFileMtime) return tokenCache
+        const raw = await readFile(newApi.accessTokenFile, 'utf8')
+        const value = raw.trim()
+        if (value) {
+          tokenCache = value
+          tokenFileMtime = info.mtimeMs
+          tokenMtimeChecked = true
+          return tokenCache
+        }
+      } catch (error) {
+        log('读取 new-api access token 文件失败 ' + newApi.accessTokenFile, error)
+      }
+    }
+    if (!tokenCache) tokenCache = newApi.accessToken
+    if (!tokenCache) throw new Error('未配置 new-api access token（accessTokenFile 与 accessToken 均为空）')
+    return tokenCache
+  }
+
+  async function request(path, options = {}) {
+    const { method = 'GET', body } = options
+    const token = await accessToken()
+    const response = await fetch(newApi.baseUrl + path, {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'new-api-user': String(newApi.userId),
+        accept: 'application/json',
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
+    })
+    const text = await response.text()
+    if (!response.ok) throw new Error(`new-api ${method} ${path} → HTTP ${response.status}: ${text.slice(0, 160)}`)
+    let parsed
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      throw new Error(`new-api ${method} ${path} 返回非 JSON: ${text.slice(0, 120)}`)
+    }
+    if (parsed && parsed.success === false) {
+      throw new Error(`new-api ${method} ${path} 失败: ${typeof parsed.message === 'string' ? parsed.message : text.slice(0, 120)}`)
+    }
+    return parsed
+  }
+
+  return {
+    channel: async id => {
+      const payload = await request(`/api/channel/${encodeURIComponent(id)}`)
+      const data = payload && payload.data
+      if (!data || typeof data !== 'object') throw new Error(`new-api 渠道 ${id} 返回缺 data`)
+      return data
+    },
+    // 部分更新：只带 id + priority，其他字段由 new-api 沿用（GORM 会跳过零值字段）
+    updatePriority: (id, priority) =>
+      request('/api/channel/', { method: 'PUT', body: { id, priority } }),
+  }
+}
+
+/**
+ * 积分优先消耗平台：new-api 里 WorkBuddy / Qoder 各一个渠道，优先级数字大的先用，
+ * 上游出错重试会落到下一优先级渠道。所以「优先平台」= 自己 preferred、对方 fallback。
+ * 状态挂在 state.routing 上被快照读取；读取失败只降级 available，不抛给快照路径。
+ */
+function createRouting(opts, log) {
+  const newApi = opts.newApi
+  const client = createNewApiClient(newApi, log)
+  const wbId = newApi.channels.workbuddy
+  const qoderId = newApi.channels.qoder
+  const preferred = newApi.priorities.preferred
+  const fallback = newApi.priorities.fallback
+  const state = {
+    enabled: true,
+    available: false,
+    mode: loadRoutingMode(),
+    actualMode: '',
+    matched: false,
+    error: '',
+    updatedAt: '',
+    channels: {
+      workbuddy: { id: wbId, priority: null },
+      qoder: { id: qoderId, priority: null },
+    },
+    preferredPriority: preferred,
+    fallbackPriority: fallback,
+  }
+  // 内部字段（不进快照）：缓存时刻 / 进行中的读取 / 进行中的切换
+  let checkedAt = 0
+  let checking = null
+  let applying = null
+
+  function view() {
+    return {
+      enabled: state.enabled,
+      available: state.available,
+      mode: state.mode,
+      actualMode: state.actualMode,
+      matched: state.matched,
+      error: state.error,
+      updatedAt: state.updatedAt,
+      channels: {
+        workbuddy: { id: state.channels.workbuddy.id, priority: state.channels.workbuddy.priority },
+        qoder: { id: state.channels.qoder.id, priority: state.channels.qoder.priority },
+      },
+      preferredPriority: state.preferredPriority,
+      fallbackPriority: state.fallbackPriority,
+    }
+  }
+
+  /** GET 两个渠道的 priority 并写回状态；任一失败直接抛给调用方决定怎么降级。 */
+  async function readPriorities() {
+    const [workbuddy, qoder] = await Promise.all([
+      client.channel(wbId),
+      client.channel(qoderId),
+    ])
+    for (const [key, row] of [['workbuddy', workbuddy], ['qoder', qoder]]) {
+      const priority = Number(row.priority)
+      if (!Number.isFinite(priority)) throw new Error(`new-api 渠道 ${state.channels[key].id} 缺 priority`)
+      state.channels[key].priority = priority
+    }
+    return {
+      workbuddy: state.channels.workbuddy.priority,
+      qoder: state.channels.qoder.priority,
+    }
+  }
+
+  function deriveMode(workbuddyPriority, qoderPriority) {
+    if (workbuddyPriority > qoderPriority) return 'workbuddy'
+    if (workbuddyPriority < qoderPriority) return 'qoder'
+    return 'tie'
+  }
+
+  /** 只读当前状态：30 秒缓存；不改写优先级。 */
+  async function status(force = false) {
+    const now = Date.now()
+    if (!force && checkedAt && now - checkedAt < ROUTING_TTL_MS) return view()
+    if (checking) return checking
+    checking = (async () => {
+      try {
+        const priorities = await readPriorities()
+        state.available = true
+        state.error = ''
+        state.actualMode = deriveMode(priorities.workbuddy, priorities.qoder)
+        state.matched = Boolean(state.mode) && state.actualMode === state.mode
+        state.updatedAt = new Date().toISOString()
+      } catch (error) {
+        // new-api 挂了也不能让快照失败：只标记不可用
+        state.available = false
+        state.actualMode = ''
+        state.matched = false
+        state.error = errorMessage(error)
+        log('读取 new-api 渠道优先级失败', error)
+      } finally {
+        checkedAt = Date.now()
+        checking = null
+      }
+      return view()
+    })()
+    return checking
+  }
+
+  async function applyMode(mode) {
+    const desired = mode === 'workbuddy'
+      ? { workbuddy: preferred, qoder: fallback }
+      : { workbuddy: fallback, qoder: preferred }
+    try {
+      // 先读当前值：没变的渠道跳过 PUT（new-api 每次 PUT 都会写库）
+      let current = null
+      try {
+        current = await readPriorities()
+      } catch (error) {
+        log('读取 new-api 渠道优先级失败（继续写入）', error)
+      }
+      for (const key of ['workbuddy', 'qoder']) {
+        if (current && current[key] === desired[key]) continue
+        await client.updatePriority(state.channels[key].id, desired[key])
+      }
+      // 写完必须 GET 校验：两个渠道都到期望值才算切换成功
+      const verified = await readPriorities()
+      if (verified.workbuddy !== desired.workbuddy || verified.qoder !== desired.qoder) {
+        throw new Error(
+          `new-api 渠道优先级校验失败：期望 ${wbId}=${desired.workbuddy}、${qoderId}=${desired.qoder}，`
+          + `实际 ${wbId}=${verified.workbuddy}、${qoderId}=${verified.qoder}`,
+        )
+      }
+      state.available = true
+      state.error = ''
+      state.mode = mode
+      state.actualMode = deriveMode(verified.workbuddy, verified.qoder)
+      state.matched = state.actualMode === mode
+      state.updatedAt = new Date().toISOString()
+      checkedAt = Date.now()
+      try {
+        await saveRoutingMode(mode)
+      } catch (error) {
+        // 优先级已经切好；落盘失败只影响重启后还记不记得这次选择
+        log('保存优先消耗平台失败', error)
+      }
+      log(`已切换积分优先消耗平台：${mode === 'workbuddy' ? 'WorkBuddy' : 'Qoder'}（${wbId}=${verified.workbuddy}、${qoderId}=${verified.qoder}）`)
+      return { ok: true, routing: view() }
+    } catch (error) {
+      state.available = false
+      state.error = errorMessage(error)
+      log('切换积分优先消耗平台失败', error)
+      // 失败保留原 mode：不把用户期望改写成成功态
+      return { ok: false, error: state.error, routing: view() }
+    }
+  }
+
+  /** 切换优先平台：mode 只接受 workbuddy / qoder；并发时复用同一个 promise。 */
+  async function apply(mode) {
+    if (mode !== 'workbuddy' && mode !== 'qoder') return { ok: false, error: 'invalid_mode' }
+    if (applying) return applying
+    applying = (async () => {
+      try {
+        return await applyMode(mode)
+      } finally {
+        applying = null
+      }
+    })()
+    return applying
+  }
+
+  return { status, apply, view }
 }
 
 
@@ -958,6 +1350,8 @@ function createState(persistedDaily) {
     lastSessionId: '',
     recentCache: null,
     qoder: null,
+    // new-api 平台优先消耗模块（createRouting 的返回值，快照读 view()）；null = 未配置
+    routing: null,
     // 会话 → 承载账号：bySession 一旦固定就不再换（前台会话切换只切展示的会话）；
     // workbuddy / qoder 是各账号最近一次请求的候选，用于按事件时刻就近归属。
     activity: { bySession: new Map(), workbuddy: new Map(), qoder: new Map(), qoderFetchedAt: 0 },
@@ -1909,7 +2303,11 @@ function buildPayload(state, ledger, opts, sessionId, activitySessionId) {
           creditsTotal: account.creditsTotal,
           used: account.used || 0,
           todayCredits: round2(state.daily.qoder.get(account.uid) || 0),
-          dailyCreditSpent: account.dailyCreditSpent,
+          // 网关 /accounts 的 dailyCreditsToday 是名义口径（免费调用也累计 credit），
+          // 用已按 billable 过滤的本地台账替代；台账尚未加载完时回落到网关值。
+          dailyCreditSpent: state.daily.qoderLoaded
+            ? round2(state.daily.qoder.get(account.uid) || 0)
+            : account.dailyCreditSpent,
           dailyCreditLimit: account.dailyCreditLimit,
           capped: account.capped === true,
           cooling: account.cooling,
@@ -1941,6 +2339,8 @@ function buildPayload(state, ledger, opts, sessionId, activitySessionId) {
       autoCheckin: opts.autoCheckin,
     },
     qoder,
+    // 平台优先消耗（new-api 渠道优先级）：未配置时只有 {enabled:false}
+    routing: state.routing ? state.routing.view() : { enabled: false },
     session,
     activity: activityView(state, activitySessionId),
     lastSessionId: state.lastSessionId,

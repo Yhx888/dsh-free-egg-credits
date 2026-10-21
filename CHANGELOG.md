@@ -3,6 +3,46 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.5.0] - 2026-10-20
+
+### 新增
+
+- **积分优先消耗（平台级切换）**：设置页新增「积分优先消耗」两个互斥按钮（WorkBuddy 优先 / Qoder 优先），
+  侧边栏标题行有一个紧凑 chip 可一键切换。切换通过 new-api 管理接口（`GET/PUT /api/channel/{id}`）
+  调整两个渠道的优先级（默认 WorkBuddy 渠道 13 / Qoder 渠道 12；优先平台 10、回退平台 5），
+  即时生效、只影响新请求；Qoder 服务器拥堵时可切回 WorkBuddy，拥堵/满额时 new-api 会自动回退另一平台。
+  - 选择落盘 `<DSH_HOME>/free-egg-credits/routing.json`；每次快照从 new-api 回读真实优先级，
+    被其他进程改过时设置页提示「选择与实际不一致」。
+  - 新增 `newApi` 配置（`baseUrl` / `userId` / `accessToken` 或 `accessTokenFile` /
+    `channels` / `priorities`）；未配置时整块 UI 隐藏，其余行为不变。access token 只在 Host 内使用，
+    不下发浏览器。
+  - 新增 Host 路由 `POST /__dsh-wb-credits/preference`（只接受 `workbuddy` / `qoder` 两个枚举值，
+    只改配置里写死的两个渠道 id）。
+- **Qoder 签到状态改为按账号口径**：优先使用面板 `GET /accounts` 的每个账号 `lastCheckin`
+  （今天已签到 / 今日尚未签到，带签到时刻），面板不可用才回落到调度器 `last_run_time`；
+  不再出现「调度器跑过 → 所有账号都绿」。
+
+### 修复
+
+- **Qoder「今日消耗」不再计入免费请求**：`/usage/recent` 行的 `credit` 是名义价，
+  免费模型（`billable=false`）不扣积分却仍带非零 `credit`，之前被累加进「今日消耗」与
+  「今日已用」。现在按 `billable` 过滤（缺该字段的旧网关保持原口径），面板
+  `dailyCreditsToday` 的名义值也改用过滤后的本地台账，避免免费期显示虚高
+  （实测 5 条免费请求曾被计成 15.17）。
+- 客户端补充 `pending` 签到状态分支（黄点 + 文案），不再显示成「状态未知」。
+- **Qoder「假绿」修正**：`lastCheckin` 早于当天 10:00（UTC+8）且当前已过 10:00 时显示黄点
+  「今日奖励待领取（每日 10:00 开放，网关 21:00 自动补领）」——09:00 的调度器可能只给昨天那批
+  活动盖了章，当天 100 Credits 还没真正到账；其余情况按每账号 `lastCheckin` 显示
+  已签到 / 今日尚未签到。
+
+### 说明
+
+- 两个网关都有后台定时签到（WorkBuddy 09:00 / 21:00；Qoder 09:00 / 10:15 / 10:45 / 21:00），**不依赖 DSH 打开**；
+  插件 `autoCheckin` 仍是打开界面时的幂等补签与状态核对。README 补充了这一点。
+- 「已签到」不等于「当天奖励到账」：Qoder 每日活动按 `10:00`（UTC+8）刷新领取，调度器在那之前
+  可能先盖上「已签到」，当天的 100 积分要等下一轮领取。
+- 本次 Host 半改动需要重启 DSH 生效；Client 半刷新页面即可（Host 未升级时 UI 会自动隐藏新控件）。
+
 ## [1.4.0] - 2026-10-19
 
 ### 新增
@@ -131,8 +171,6 @@
 - 积分是**折算值**：单价取自网关对上游 `usage.credit` 的实测台账，界面统一带 `≈`。
 - 两个网关都是外部依赖，不在本仓库内；未配置时对应来源不显示。
 
-[1.3.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.3.0
-[1.2.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.2.0
 [1.1.1]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.1.1
 [1.1.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.0.0

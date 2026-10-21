@@ -10,7 +10,9 @@ A plugin for the DSH (DeepSeek Harness) web UI that surfaces the
 **available credits**, **daily credit budget (used / limit / remaining / capped)** and
 **daily check-in state** of accounts on your local reverse-proxy gateways (WorkBuddy / Qoder),
 plus the **credits each conversation** is estimated to have consumed — in the sidebar, under the
-composer, at the end of every turn, and in a settings section.
+composer, at the end of every turn, and in a settings section. The settings page can also switch
+**which platform's credits are spent first** (via local new-api channel priorities, so you can
+fall back to WorkBuddy when Qoder is congested).
 
 > Credits are **estimates**: WorkBuddy uses its account `model_costs` ledger and Qoder uses the panel
 > `/usage` ledger (real `credit ÷ total_tokens`) as measured rates; models without measurements are
@@ -20,8 +22,9 @@ composer, at the end of every turn, and in a settings section.
 
 - **Sidebar footer (above the account row)**: a credits block. Each row is
   "status dot · account name · source badge (WB/Qoder) · today's usage · balance". Check-in state is
-  expressed only by the leftmost dot (green = checked in today); rate-limit / degrade / failure
-  streaks appear as badges with a recovery time. Hidden while the sidebar is collapsed.
+  expressed only by the leftmost dot (green = checked in today; yellow = not checked in yet / today's
+  reward pending); rate-limit / degrade / failure streaks appear as badges with a recovery time.
+  Hidden while the sidebar is collapsed.
   **The highlight is pinned per foreground conversation**: each session gets one serving account
   after its first reply and keeps it (switching conversations only switches the highlighted row —
   it never jumps around with the globally latest request). The active row gets a **gray
@@ -30,7 +33,8 @@ composer, at the end of every turn, and in a settings section.
   usage ledger. Once the gateway enables the daily credit budget it becomes "used / limit"
   (e.g. `118/100`); a capped account is drawn in the host warning color (hover: "Daily limit
   reached — account paused, resets at 00:00"), and when every account is capped the block gets one
-  extra "daily credits used up" line.
+  extra "daily credits used up" line. The block header also has a compact **credit-priority chip**
+  (e.g. `WB first`): one click switches to the other platform without opening settings.
 - **Below the composer**: total estimated credits for the current conversation. As long as the
   conversation uses a model from a free-egg provider (by default `free-egg` / `workbuddy` / `qoder` /
   `new-api`), this strip stays visible — `≈0` before the first reply, and a “rate pending” hint when
@@ -39,9 +43,9 @@ composer, at the end of every turn, and in a settings section.
 - **End of each turn**: estimated credits for that turn (`This turn ≈N credits`; hover for tokens
   and models).
 - **Settings → Free Tier Credits**: account cards (name / source / balance / check-in / usage /
-  daily used ≈X of limit (≈Y left) / check-in now), rate-limit and degrade details, the measured
-  credit rate, recent chats and per-turn breakdown. When every account is capped, a notice line is
-  added at the top of the page.
+  daily used ≈X of limit (≈Y left) / check-in now), **credit priority** (WorkBuddy-first / Qoder-first
+  toggle), rate-limit and degrade details, the measured credit rate, recent chats and per-turn
+  breakdown. When every account is capped, a notice line is added at the top of the page.
 
 WorkBuddy and Qoder accounts share the same row/card layout and are distinguished only by the
 source badge.
@@ -90,9 +94,10 @@ refresh.
 |---|---|---|
 | [WorkBuddy2API gateway](https://github.com/linguo2625469/workbuddy2api-panel) (`workbuddy2api`) | WorkBuddy / CodeBuddy account credits and check-in | `gatewayBaseUrl`, `gatewayConfigPath` |
 | [Qoder gateway](https://github.com/shuishuipingan/qoder2api-hub) (`qoder2api-hub`) | Qoder account credits and check-in scheduler | `qoder.baseUrl`, `qoder.panelPasswordFile` |
+| [New API](https://github.com/QuantumNous/new-api) (`new-api`, `:3001`) | Credit priority switching (channel priorities) | `newApi.*` |
 
-Neither gateway is part of this repository; the plugin only reads their HTTP APIs. Gateway keys and
-the panel password are read on the host side and are never sent to the browser.
+Neither gateway is part of this repository; the plugin only reads their HTTP APIs. Gateway keys, the
+panel password and the new-api admin token are read on the host side and are never sent to the browser.
 
 ## Configuration
 
@@ -114,11 +119,24 @@ Put this in the target profile's `cordis.patch.yml` (plugin id `free-egg-credits
     qoder:
       baseUrl: 'http://127.0.0.1:8790'
       panelPasswordFile: 'C:/path/to/qoder2api/.panel-password'
+    # Optional: credit-priority switching (changes two local new-api channel priorities).
+    # When omitted the whole control is hidden and nothing else changes.
+    newApi:
+      baseUrl: 'http://127.0.0.1:3001'
+      userId: 1
+      accessTokenFile: 'C:/path/to/new-api-access-token'   # file content = admin access token
+      # accessToken: '<inline fallback, either one>'
+      channels:
+        workbuddy: 13
+        qoder: 12
+      priorities:
+        preferred: 10
+        fallback: 5
 ```
 
 > This layer **replaces** the bundle-level config wholesale (it is not a deep merge). Once you
 > write a `qoder` key, include all of its fields (`baseUrl` is required; `panelPasswordFile`,
-> `panelPassword` and `enabled` are optional).
+> `panelPassword` and `enabled` are optional). The same applies to `newApi` (`baseUrl` required).
 
 | Field | Default | Description |
 |---|---|---|
@@ -134,6 +152,7 @@ Put this in the target profile's `cordis.patch.yml` (plugin id `free-egg-credits
 | `freeEggProviders` | `['free-egg','workbuddy','qoder','new-api']` | DSH providers treated as free-egg: their conversations keep the credits strip visible, and only their turns are priced |
 | `catalogBaseCreditsPer1k` | `0` | Fallback calibration base for catalog-multiplier estimates (credits per 1k tokens per multiplier unit); `0` = auto-calibrate from measured gateway rates only |
 | `qoder` | none | Qoder gateway config: `baseUrl`, `panelPasswordFile`, `panelPassword` (inline fallback), `enabled`. Omit to disable the Qoder source |
+| `newApi` | none | new-api admin config for credit-priority switching: `baseUrl`, `userId`, `accessToken` / `accessTokenFile`, `channels.workbuddy` / `channels.qoder`, `priorities.preferred` / `priorities.fallback`. Omit to hide the feature |
 
 ## Daily credit budget (enforced by the gateways)
 
@@ -171,6 +190,35 @@ What the plugin shows:
 > fall back to the previous "today's usage" rendering (Qoder keeps the last successfully fetched
 > budget values); the refresh itself still succeeds.
 
+## Credit priority (platform level)
+
+DeepSeek requests are routed by your local new-api (default `http://127.0.0.1:3001`) between the
+WorkBuddy and Qoder channels. The plugin turns this into a switch: two mutually exclusive buttons in
+the settings page ("Prefer WorkBuddy" / "Prefer Qoder"), plus a compact chip in the sidebar block
+header. One click rewrites the two new-api channel priorities (WorkBuddy channel id 13 and Qoder
+channel id 12 on this machine):
+
+| Choice | WorkBuddy channel | Qoder channel | Effect |
+|---|---|---|---|
+| Prefer WorkBuddy (existing default) | `10` | `5` | DeepSeek burns WorkBuddy credits first; Qoder only on failure / cap |
+| Prefer Qoder | `5` | `10` | DeepSeek burns Qoder credits first; falls back to WorkBuddy on congestion / failure / cap |
+
+- The change is **effective immediately** (new-api rebuilds its channel cache) and only affects new
+  requests; in-flight conversations are untouched.
+- Only **channel priorities** change; the gateways still pick accounts inside their own pools by
+  balance / daily budget.
+- The choice is persisted in `<DSH_HOME>/free-egg-credits/routing.json`; the effective state is read
+  back from new-api every 30 s (the settings refresh forces a re-read). If the priorities were changed
+  elsewhere the settings page says "selected ≠ effective".
+- It needs a new-api admin credential (an admin user's access token); the plugin reads it from the
+  config / token file on the host and never sends it to the browser. Without `newApi` the whole
+  control is hidden and nothing else changes.
+
+Getting the access token: sign in to the new-api console → personal settings → system access token
+(regenerating rotates it and invalidates the old value; locally `GET /api/user/token` triggers and
+returns the new one). Put it in the file referenced by `accessTokenFile` (recommended; restrict file
+permissions) or inline in `accessToken`; **never commit it**.
+
 ## Data sources
 
 | Data | Source |
@@ -178,10 +226,11 @@ What the plugin shows:
 | WorkBuddy credits | Gateway panel `GET /panel/api/overview` (accounts with `realm=cn`) |
 | WorkBuddy check-in | Once per day, on first UI open, a single-account check-in call (`POST /panel/api/accounts/{uid}/checkin`). Upstream returns `10001 already checked in` for repeats — idempotent, no side effects; if not checked in yet, it completes today's check-in |
 | Qoder credits | Qoder gateway `GET /credits/summary` (registered view: `credits_remain` / `credits_size`) |
-| Qoder check-in | Qoder gateway `GET /scheduler`: if the scheduler ran a check-in pass today, it counts as checked in; `next_run_time` is the next pass |
+| Qoder check-in | Qoder panel `GET /accounts` per-account `lastCheckin` (checked in today / not yet / today's reward pending, with the time); falls back to `GET /scheduler` `last_run_time` when the panel read fails or the account row is missing. Check-in itself is performed by the gateway scheduler in the background |
+| Platform credit priority | new-api admin API `GET /api/channel/{id}` (read `priority`) and `PUT /api/channel/` (write `priority`): WorkBuddy channel 13 / Qoder channel 12; verified by reading back after each switch |
 | Session serving account | WorkBuddy panel `token_usage.last_used_at` / `last_model`; Qoder panel `GET /usage/recent` (`account` / `model` / `at`, cached for 3 s). After each reply the host waits 1.5 s, refreshes both gateways and matches the latest request to that session by timestamp; the first match is pinned and never switches |
-| Today's usage per account | WorkBuddy: sum of balance decreases between snapshots (the gateway deducts the upstream `credit` from account balance); the ledger is persisted to `<DSH_HOME>/free-egg-credits/daily.json` and continues across DSH restarts. Qoder: exact sum of `credit` over today's `/usage/recent` rows |
-| Daily credit budget / used today | WorkBuddy: `daily_credit_spent` / `daily_credit_limit` / `daily_credit_capped` on `GET /panel/api/overview` account rows; Qoder: `dailyCreditsToday` / `dailyCreditLimit` / `creditLimitReached` from `GET /accounts` (panel token handled on the host), fetched in the same refresh as `/credits/summary` (60 s cache kept). Missing fields (old gateways) stay undefined/0/false and the UI falls back to the old "today's usage" rendering; a failed `/accounts` read only leaves the budget fields absent and never fails the Qoder credits refresh |
+| Today's usage per account | WorkBuddy: sum of balance decreases between snapshots (the gateway deducts the upstream `credit` from account balance); the ledger is persisted to `<DSH_HOME>/free-egg-credits/daily.json` and continues across DSH restarts. Qoder: sum of `credit` over today's `/usage/recent` rows where `billable !== false` (`billable=false` free rows are excluded; older gateways without the field count as billed) |
+| Daily credit budget / used today | WorkBuddy: `daily_credit_spent` / `daily_credit_limit` / `daily_credit_capped` on `GET /panel/api/overview` account rows; Qoder: `dailyCreditsToday` / `dailyCreditLimit` / `creditLimitReached` from `GET /accounts` (panel token handled on the host), fetched in the same refresh as `/credits/summary` (60 s cache kept). Qoder's `dailyCreditsToday` is a nominal figure (free calls still accrue `credit`), so the UI uses the local ledger filtered by `billable` instead. Missing fields (old gateways) stay undefined/0/false and the UI falls back to the old "today's usage" rendering; a failed `/accounts` read only leaves the budget fields absent and never fails the Qoder credits refresh |
 | Tokens per turn | `assistant/message.usage` in DSH session events (folded on the host, never persisted) |
 | Credit rate (WorkBuddy measured) | `model_costs[].cost_per_1k` from gateway account state, weighted by sample count |
 | Credit rate (Qoder measured) | Qoder panel `GET /usage` `by_model` ledger: real `credit ÷ total_tokens` (includes cache-hit discounts); cached for 5 minutes |
@@ -194,36 +243,55 @@ What the plugin shows:
 
 The plugin has a host half and a client half:
 
-- **Host half (`index.js`)**: `inject: ['webServer']`; registers five endpoints under the
+- **Host half (`index.js`)**: `inject: ['webServer']`; registers six endpoints under the
   same-origin `/__dsh-wb-credits` prefix (`GET /snapshot`, `GET /sessions`, `POST /refresh`,
-  `POST /checkin`, `POST /qoder/checkin`). It reads gateway panels and model catalogs, decides
-  check-in state, folds per-turn token usage from `session/event` plus the session log, tracks which
-  provider each turn came from, and converts tokens to credits through three layers (measured rate →
-  catalog-multiplier estimate → config override). After each reply it refreshes WorkBuddy
-  `token_usage` and Qoder `/usage/recent`, attributes that request to the session by timestamp and
-  pins the first match (a session never switches accounts), and maintains per-account "today's
-  usage" (WorkBuddy balance deltas persisted across restarts; Qoder exact ledger sums) for the
-  sidebar. It also maps the gateway-side daily budget fields (WorkBuddy `/panel/api/overview`;
-  Qoder `/accounts`, best-effort with last-known values retained on failure). Keys, password and
-  panel token only ever exist in this process.
+  `POST /checkin`, `POST /qoder/checkin`, `POST /preference`). It reads gateway panels and model
+  catalogs, decides check-in state, folds per-turn token usage from `session/event` plus the session
+  log, tracks which provider each turn came from, and converts tokens to credits through three
+  layers (measured rate → catalog-multiplier estimate → config override). After each reply it
+  refreshes WorkBuddy `token_usage` and Qoder `/usage/recent`, attributes that request to the session
+  by timestamp and pins the first match (a session never switches accounts), and maintains
+  per-account "today's usage" (WorkBuddy balance deltas persisted across restarts; Qoder exact
+  ledger sums) for the sidebar. It also maps the gateway-side daily budget fields (WorkBuddy
+  `/panel/api/overview`; Qoder `/accounts`, best-effort with last-known values retained on failure).
+  The credit-priority switch reads/writes channel priorities through the new-api admin API (the token
+  stays on the host); the choice is persisted and the effective state is read back on every snapshot.
+  Keys, password, panel token and the new-api token only ever exist in this process.
 - **Client half (`client.js`)**: a hand-written `window.__ModuleLoader__` bundle that injects React
   components into `sidebar.footer.action`, `conversation.composer.dock`,
   `conversation.chat.turnTail` and `settings.section`. It only reads the same-origin endpoints
   above and reuses host CSS variables (`--dsw-alias-*`).
 
-Check-in is probe-based: on the first UI open of the day, accounts that are not known to be checked
-in get one idempotent check-in call and its response decides the state. Set `autoCheckin: false` to
-disable automatic check-in; state may then show as unknown and you can check in manually from the
-settings page.
+Check-in is two-layered — background scheduler plus plugin fallback:
+
+- **Both gateways run their own background schedulers, independent of DSH being open**: WorkBuddy
+  checks in per `schedule.checkin_hours` (default `09:00` / `21:00`); the Qoder scheduler checks in
+  and claims campaign credits at `09:00` / `10:15` / `10:45` / `21:00` (`next_run_time` is visible in
+  the snapshot; the 10:15 and 10:45 slots are retries for delayed upstream campaign publication
+  after the 10:00 refresh).
+- The plugin's `autoCheckin` only performs an **idempotent backfill / state probe when the UI is
+  opened**: WorkBuddy accounts not known to be checked in get one single-account check-in call
+  (upstream answers `10001` for "already checked in today", no side effects); Qoder is never
+  auto-triggered — its panel `lastCheckin` is displayed and the settings page has a manual button.
+- For Qoder, "check-in" means claiming the daily campaign (a new round opens at `10:00` UTC+8). If
+  `lastCheckin` is before 10:00 today while the clock is already past 10:00, the dot turns **yellow
+  ("today's reward pending")** instead of green — the 09:00 scheduler pass may only have stamped
+  yesterday's batch, and today's 100 credits arrive at 21:00 (or via the manual button).
+- Set `autoCheckin: false` to disable the plugin probe; WorkBuddy state may then show as unknown and
+  you can check in manually from the settings page.
+- "Checked in" ≠ "today's credits already credited": balances are whatever the gateway wrote back.
+  Qoder's daily campaign refreshes at `10:00` (UTC+8); if the scheduler ran earlier it may stamp the
+  account as checked in while today's 100 credits are still to be claimed.
 
 ## Privacy and security
 
-- **No telemetry**: the plugin only talks to the local gateway URLs in its config.
-- **Credentials stay on the host**: the WorkBuddy `api_key` is read from the gateway `config.json`
-  and the Qoder panel password from its password file; neither appears in snapshots sent to the
-  browser.
+- **No telemetry**: the plugin only talks to the local gateway and new-api URLs in its config.
+- **Credentials stay on the host**: the WorkBuddy `api_key` is read from the gateway `config.json`,
+  the Qoder panel password from its password file, and the new-api admin access token from the
+  plugin config / token file; none of them appears in snapshots sent to the browser.
 - **No arbitrary proxying**: the check-in endpoint only accepts account uids that are already in
-  the snapshot.
+  the snapshot; the priority endpoint only accepts `workbuddy` / `qoder` and only touches the two
+  configured channel ids.
 - Plugin routes rely on DSH's own authentication; **do not expose the DSH port to the public
   internet without an auth layer**.
 
@@ -244,11 +312,21 @@ Please report security issues privately as described in [SECURITY.md](SECURITY.m
   are a recent average for that model and drift when the cache mix changes.
 - free-egg aggregation aliases are matched by stripping version numbers (DeepSeek-Flash /
   deepseek-v4.1-flash); if a match is ambiguous, set `creditsPer1k` explicitly.
-- Check-in state depends on one idempotent check-in call; with `autoCheckin` disabled it can be
-  "unknown".
+- Check-in state comes from the gateways: WorkBuddy from one idempotent check-in call, Qoder from the
+  panel `lastCheckin`. "Checked in" does not guarantee that today's reward credits have landed yet
+  (see "Checked in ≠ today's credits already credited"); with `autoCheckin: false` WorkBuddy state
+  can be "unknown".
 - Qoder credits use the upstream registered view (`credits_remain` / `credits_size`) and are
   written back by the gateway after check-in or usage. Snapshots are cached for 60 seconds; the
   settings page refresh forces a new pull.
+- The credit-priority switch needs a new-api admin access token. When the token expires/rotates the
+  switch fails and the settings page shows the error (update `accessTokenFile`; the host re-reads it
+  on mtime change). If your new-api channels are not the default 13/12, set `channels` accordingly.
+  If another process changes the priorities, the UI reports "selected ≠ effective" — the effective
+  state wins. If a channel was auto-disabled by new-api, the plugin only changes priorities and will
+  not re-enable it; enable it in the new-api console.
+- Credit priority is a 1.5.0 host feature: **restart DSH** after upgrading, otherwise the UI hides
+  the control automatically because the `routing` field is missing.
 - The daily credit budget is **enforced by the gateways**; the plugin only displays it and never
   throttles or switches accounts. Without the fields (old gateways) or when the Qoder panel
   `/accounts` read fails, the UI falls back to the 1.3.0 "today's usage" rendering (Qoder keeps the
