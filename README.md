@@ -39,7 +39,7 @@ dsh plugin --profile web add github:Yhx888/dsh-free-egg-credits
 - **知道花在哪**：每个会话、每条对话的积分消耗自动折算，悬停可看 token 与模型。
 - **满额能救急**：Qoder 拥堵或额度用完时，点一下 chip 切到 WorkBuddy 优先，不用改配置（需配置 `newApi`）。
 
-> 已收录到社区 [DSH 插件市场](https://github.com/bradeGithub/DSH-Plugins-Marketplace)（索引每 2 小时刷新）；搜索 `dsh-free-egg-credits`、`WorkBuddy` 或 `Qoder` 即可。
+> 已收录到社区 [DSH 插件市场](https://github.com/bradeGithub/DSH-Plugins-Marketplace)（索引每 2 小时刷新）；搜索 `Free Egg`、`dsh-free-egg-credits`、`WorkBuddy` 或 `Qoder` 即可。
 
 ## 界面落点
 

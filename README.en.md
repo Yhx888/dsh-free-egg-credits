@@ -41,7 +41,7 @@ dsh plugin --profile web add github:Yhx888/dsh-free-egg-credits
 - **Know where credits go**: per-conversation and per-turn estimates, with tokens and models on hover.
 - **A way out when capped**: when Qoder is congested or out of budget, one click switches to WorkBuddy-first (requires `newApi`).
 
-> Listed in the community [DSH Plugin Marketplace](https://github.com/bradeGithub/DSH-Plugins-Marketplace) (index refreshed every 2 hours); search for `dsh-free-egg-credits`, `WorkBuddy` or `Qoder`.
+> Listed in the community [DSH Plugin Marketplace](https://github.com/bradeGithub/DSH-Plugins-Marketplace) (index refreshed every 2 hours); search for `Free Egg`, `dsh-free-egg-credits`, `WorkBuddy` or `Qoder`.
 
 ## Where it shows up
 
