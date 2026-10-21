@@ -5,6 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-3c873a.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DSH-plugin-4b8bf5.svg)](https://github.com/topics/dsh-plugin)
+[![DSH Marketplace](https://img.shields.io/badge/DSH-Marketplace-2f6feb.svg)](https://github.com/bradeGithub/DSH-Plugins-Marketplace)
 
 A plugin for the DSH (DeepSeek Harness) web UI that surfaces the
 **available credits**, **daily credit budget (used / limit / remaining / capped)** and
@@ -17,6 +18,30 @@ fall back to WorkBuddy when Qoder is congested).
 > Credits are **estimates**: WorkBuddy uses its account `model_costs` ledger and Qoder uses the panel
 > `/usage` ledger (real `credit ÷ total_tokens`) as measured rates; models without measurements are
 > estimated from each gateway's model catalog multipliers. The UI always prefixes values with `≈`.
+
+## Quick start
+
+> **Stop juggling three dashboards**: see WorkBuddy / Qoder credits, today's budget, check-in state and per-turn spend in the DSH sidebar — and switch which platform is spent first with one click when new-api is configured.
+
+### One-click install
+
+```bash
+dsh plugin --profile web add github:Yhx888/dsh-free-egg-credits
+```
+
+- **Desktop app**: open **Plugins → Add plugin**, paste `https://github.com/Yhx888/dsh-free-egg-credits`, install, then restart DSH.
+- **Web / CLI**: run the command above, fill in the gateway addresses and secret-file paths from [Configuration](#configuration), then restart DSH.
+- **Already running WorkBuddy2API / qoder2api-hub?** Usually you only need `gatewayBaseUrl` + `gatewayConfigPath` (WorkBuddy) and `qoder.baseUrl` + `qoder.panelPasswordFile` (Qoder); `newApi` is optional.
+
+> **Who it's for**: users already running WorkBuddy2API / qoder2api-hub (optionally new-api) locally. The plugin only reads those local gateway APIs; it does not provide accounts, credits or gateways, and shows nothing without them.
+
+### What it solves
+
+- **No more panel hopping**: balance, today's used / limit, check-in state and the active account — all in the sidebar.
+- **Know where credits go**: per-conversation and per-turn estimates, with tokens and models on hover.
+- **A way out when capped**: when Qoder is congested or out of budget, one click switches to WorkBuddy-first (requires `newApi`).
+
+> Listed in the community [DSH Plugin Marketplace](https://github.com/bradeGithub/DSH-Plugins-Marketplace) (index refreshed every 2 hours); search for `dsh-free-egg-credits`, `WorkBuddy` or `Qoder`.
 
 ## Where it shows up
 

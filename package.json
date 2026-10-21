@@ -2,7 +2,7 @@
   "name": "dsh-free-egg-credits",
   "version": "1.5.0",
   "type": "module",
-  "description": "Free Egg 积分：在 DSH 界面里显示各反代网关（WorkBuddy / Qoder）账号的可用积分、每日积分预算（已用/上限/满额）、每日签到状态，以及每条对话消耗的积分。",
+  "description": "Free Egg 积分：在 DSH 侧边栏查看 WorkBuddy / Qoder 账号积分、今日额度、签到状态与每轮消耗，并支持一键切换优先消耗平台。",
   "license": "MIT",
   "author": "dsh-free-egg-credits contributors",
   "homepage": "https://github.com/Yhx888/dsh-free-egg-credits#readme",
@@ -21,12 +21,17 @@
     "check": "node --check index.js && node --check client.js"
   },
   "keywords": [
+    "dsh",
     "dsh-plugin",
     "deepseek-harness",
+    "cordis-plugin",
     "workbuddy",
     "qoder",
     "credits",
-    "checkin"
+    "quota",
+    "balance",
+    "checkin",
+    "sidebar"
   ],
   "exports": {
     ".": "./index.js",

@@ -7,6 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-3c873a.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DSH-plugin-4b8bf5.svg)](https://github.com/topics/dsh-plugin)
+[![DSH Marketplace](https://img.shields.io/badge/DSH-Marketplace-2f6feb.svg)](https://github.com/bradeGithub/DSH-Plugins-Marketplace)
 
 一个 DSH（DeepSeek Harness）Web 界面插件：把本地反代网关
 （WorkBuddy / Qoder）里各账号的**可用积分**、**每日积分预算（已用 / 上限 / 剩余 / 满额）**、
@@ -15,6 +16,30 @@
 （基于本机 new-api 渠道优先级，Qoder 拥堵时点一下切回 WorkBuddy）。
 
 > 积分为**折算值**：WorkBuddy 用账号 `model_costs` 台账、Qoder 用面板 `/usage` 台账（真实 `credit ÷ total_tokens`）作为实测单价；未实测的模型按各网关的模型目录倍率折算，界面统一带 `≈` 标记。
+
+## 快速开始
+
+> **不用再开三个面板**：在 DSH 侧边栏一眼看清 WorkBuddy / Qoder 还剩多少积分、今天还能不能用、这轮烧了多少；配置了 new-api 时还能一键切换优先消耗平台。
+
+### 一键安装
+
+```bash
+dsh plugin --profile web add github:Yhx888/dsh-free-egg-credits
+```
+
+- **桌面端**：侧栏 **插件 → 添加插件**，粘贴 `https://github.com/Yhx888/dsh-free-egg-credits`，点安装，然后重启 DSH。
+- **Web / CLI**：执行上面的命令；装好后按 [配置](#配置) 填入网关地址与密钥文件路径，再重启 DSH。
+- **已经装了 WorkBuddy2API / qoder2api-hub**：通常只需要 `gatewayBaseUrl` + `gatewayConfigPath`（WorkBuddy）和 `qoder.baseUrl` + `qoder.panelPasswordFile`（Qoder）；`newApi` 可选。
+
+> **适合谁**：本机已经跑 WorkBuddy2API / qoder2api-hub（可选 new-api）的用户。插件只读这些网关的本地接口，不提供账号、积分或网关；没有网关时不会显示数据。
+
+### 它解决什么
+
+- **不用切面板**：余额、今日已用 / 上限、签到状态、当前消耗账号，侧边栏一屏看完。
+- **知道花在哪**：每个会话、每条对话的积分消耗自动折算，悬停可看 token 与模型。
+- **满额能救急**：Qoder 拥堵或额度用完时，点一下 chip 切到 WorkBuddy 优先，不用改配置（需配置 `newApi`）。
+
+> 已收录到社区 [DSH 插件市场](https://github.com/bradeGithub/DSH-Plugins-Marketplace)（索引每 2 小时刷新）；搜索 `dsh-free-egg-credits`、`WorkBuddy` 或 `Qoder` 即可。
 
 ## 界面落点
 
