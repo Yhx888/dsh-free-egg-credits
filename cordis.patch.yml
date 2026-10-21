@@ -20,7 +20,15 @@
         # 网关快照缓存时长（秒）。
         refreshSeconds: 30
         # 积分单价覆盖：模型名 → 积分/千 token。留空则用网关实测扣费台账折算。
+        # 注意这是「混合单价」，会忽略缓存命中折扣；WorkBuddy 优先用下面的分类型单价。
         creditsPer1k: {}
+        # WorkBuddy 逐 token 类型单价：模型名 → { input, cache, output }，单位积分/千 token。
+        # 留空使用内置实测值（deepseek-v4.1-flash）；上游调价后可在这里覆盖。
+        # tokenRates:
+        #   deepseek-v4.1-flash:
+        #     input: 0.014444
+        #     cache: 0.0001962
+        #     output: 0.059415
         # 哪些 DSH provider 视为「free-egg 模型」：这些 provider 的对话即使还没算出单价，
         # 输入框下方也常显积分预估（默认 free-egg / workbuddy / qoder / new-api）。
         freeEggProviders: [free-egg, workbuddy, qoder, new-api]

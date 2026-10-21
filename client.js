@@ -34,6 +34,7 @@ window.__ModuleLoader__.load({
       'dock.error': 'WorkBuddy 网关未连接',
       'dock.session': '本会话 ≈{credits} 积分',
       'dock.pending': '本会话 · 等待单价',
+      'dock.cache': '缓存命中 {rate}',
       'dock.checkin': '签到 {checked}/{total}',
       'dock.refresh': '刷新',
       'checkin.checked': '今日已签到',
@@ -63,6 +64,7 @@ window.__ModuleLoader__.load({
       'turn.credits': '本轮 ≈{credits} 积分',
       'turn.free': '本轮未计积分',
       'turn.title': '本轮 {tokens} tokens · {models}',
+      'turn.titleCache': '本轮 {tokens} tokens · 缓存命中 {rate} · {models}',
       'settings.gateway': '网关',
       'settings.updated': '更新于',
       'settings.refresh': '刷新',
@@ -72,6 +74,7 @@ window.__ModuleLoader__.load({
       'settings.priceMixed': '网关实测 + 按模型倍率折算 · {count} 个模型',
       'settings.priceCatalog': '按模型倍率折算（以实测单价为基线） · {count} 个模型',
       'settings.priceConfig': '在插件配置里覆盖',
+      'settings.priceTokenTypes': 'WorkBuddy 按 input / cache / output 分类型实测；缓存命中单独计价 · {count} 个模型',
       'settings.priceNone': '暂无实测单价，暂时只显示 token',
       'settings.estimated': '估算',
       'settings.priceEstimatedCount': '{count} 个模型按倍率估算',
@@ -90,7 +93,7 @@ window.__ModuleLoader__.load({
       'settings.checking': '签到中…',
       'settings.total': '总额度 {total}',
       'settings.lastSuccess': '最近成功 {time}',
-      'settings.hint': '积分按「网关实测单价」或「模型倍率折算」估算，上游限免时段实际扣费可能更低；签到状态来自一次幂等的签到调用。',
+      'settings.hint': 'WorkBuddy 优先按 input / cache / output 分类型实测单价折算（缓存命中单独计价），其余模型按网关实测或倍率折算；上游限免时段实际扣费可能更低。签到状态来自一次幂等的签到调用。',
       'settings.noticeFailed': '操作失败：{message}',
       'limit.flag': '限流',
       'limit.degrade': '降权',
@@ -133,6 +136,7 @@ window.__ModuleLoader__.load({
       'dock.error': 'WorkBuddy gateway unreachable',
       'dock.session': 'This chat ≈{credits} credits',
       'dock.pending': 'This chat · rate pending',
+      'dock.cache': 'cache hit {rate}',
       'dock.checkin': 'Check-in {checked}/{total}',
       'dock.refresh': 'Refresh',
       'checkin.checked': 'Checked in today',
@@ -162,6 +166,7 @@ window.__ModuleLoader__.load({
       'turn.credits': 'This turn ≈{credits} credits',
       'turn.free': 'This turn cost no credits',
       'turn.title': 'This turn {tokens} tokens · {models}',
+      'turn.titleCache': 'This turn {tokens} tokens · cache hit {rate} · {models}',
       'settings.gateway': 'Gateway',
       'settings.updated': 'Updated',
       'settings.refresh': 'Refresh',
@@ -171,6 +176,7 @@ window.__ModuleLoader__.load({
       'settings.priceMixed': 'Measured + estimated from model multipliers · {count} models',
       'settings.priceCatalog': 'Estimated from model multipliers (calibrated by measured rates) · {count} models',
       'settings.priceConfig': 'Overridden in plugin config',
+      'settings.priceTokenTypes': 'WorkBuddy input / cache / output rates measured separately; cache hits priced separately · {count} models',
       'settings.priceNone': 'No measured rate yet — only tokens are shown',
       'settings.estimated': 'est.',
       'settings.priceEstimatedCount': '{count} models estimated from multipliers',
@@ -189,7 +195,7 @@ window.__ModuleLoader__.load({
       'settings.checking': 'Checking in…',
       'settings.total': 'Total quota {total}',
       'settings.lastSuccess': 'Last success {time}',
-      'settings.hint': 'Credits are estimated from measured gateway charge rates or model multipliers; actual charges during upstream free periods can be lower. Check-in state comes from one idempotent check-in call.',
+      'settings.hint': 'WorkBuddy credits use measured input / cache / output rates (cache hits priced separately); other models fall back to measured gateway rates or multipliers. Actual charges during upstream free periods can be lower. Check-in state comes from one idempotent check-in call.',
       'settings.noticeFailed': 'Operation failed: {message}',
       'limit.flag': 'Limited',
       'limit.degrade': 'Degraded',
@@ -256,6 +262,8 @@ window.__ModuleLoader__.load({
       const listeners = new Set()
       let current = { data: null, error: '', loading: false, sessionId: '', fetchedAt: 0 }
       let inflight = null
+      let inflightSessionId = ''
+      let requestSeq = 0
       let timer = null
       let soonTimer = null
 
@@ -271,8 +279,16 @@ window.__ModuleLoader__.load({
       }
 
       function load() {
-        if (inflight) return inflight
-        const query = current.sessionId ? '?sessionId=' + encodeURIComponent(current.sessionId) : ''
+        const sessionId = current.sessionId
+        if (inflight) {
+          // 同一会话复用进行中的请求；切换会话时等旧请求结束再拉新会话，
+          // 不能把旧会话的响应写进新会话（否则切换后最多显示 30 秒旧积分）。
+          if (inflightSessionId === sessionId) return inflight
+          return inflight.finally(() => load())
+        }
+        const seq = ++requestSeq
+        const query = sessionId ? '?sessionId=' + encodeURIComponent(sessionId) : ''
+        inflightSessionId = sessionId
         inflight = (async () => {
           emit({ loading: true })
           try {
@@ -280,11 +296,17 @@ window.__ModuleLoader__.load({
             const text = await response.text()
             if (!response.ok) throw new Error('HTTP ' + response.status + ': ' + text.slice(0, 160))
             const data = JSON.parse(text)
-            emit({ data, error: '', loading: false, fetchedAt: Date.now() })
+            if (seq === requestSeq && current.sessionId === sessionId) {
+              emit({ data, error: '', loading: false, fetchedAt: Date.now() })
+            }
           } catch (error) {
-            emit({ error: error && error.message ? error.message : String(error), loading: false })
+            if (seq === requestSeq && current.sessionId === sessionId) {
+              emit({ error: error && error.message ? error.message : String(error), loading: false })
+            }
           } finally {
             inflight = null
+            inflightSessionId = ''
+            if (seq !== requestSeq || current.sessionId !== sessionId) load()
           }
         })()
         return inflight
@@ -325,7 +347,9 @@ window.__ModuleLoader__.load({
 
       function setSession(sessionId) {
         const id = typeof sessionId === 'string' ? sessionId : ''
-        if (!id || id === current.sessionId) return
+        if (id === current.sessionId) return
+        // 新会话（id 为空）也要切换：保留账号列表数据，但会话级组件会因无 sessionId 隐藏，
+        // 避免把上一个会话的积分显示到新会话。
         current = Object.assign({}, current, { sessionId: id })
         load()
       }
@@ -365,7 +389,7 @@ window.__ModuleLoader__.load({
 
     function useSessionStore(sessionId) {
       React.useEffect(() => {
-        if (sessionId) store.setSession(sessionId)
+        store.setSession(sessionId || '')
       }, [sessionId])
       return useStore()
     }
@@ -406,6 +430,13 @@ window.__ModuleLoader__.load({
       if (!Number.isFinite(number)) return '—'
       if (number === 0) return '0'
       return number.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')
+    }
+
+    function formatCacheRate(cache, total) {
+      const cached = Number(cache)
+      const all = Number(total)
+      if (!(cached > 0) || !(all > 0)) return ''
+      return (Math.round((cached / all) * 1000) / 10).toFixed(1) + '%'
     }
 
     function formatClock(iso) {
@@ -1113,6 +1144,9 @@ window.__ModuleLoader__.load({
     const DockStrip = React.memo(function DockStrip(props) {
       const state = useSessionStore(props.sessionId)
       const data = state.data
+      // 没有前台会话（新会话尚未产生 id）不显示上一个会话的积分。
+      if (!props.sessionId) return null
+      if (data && data.session && data.session.id && data.session.id !== props.sessionId) return null
 
       if (!data && state.error) {
         return h(
@@ -1142,9 +1176,14 @@ window.__ModuleLoader__.load({
 
       const pending = freeEgg && rows.length > 0 && pricedTurns <= 0
       const model = trimModel(session.currentModel || '')
+      const cacheRate = formatCacheRate(
+        session.totalCacheReadTokens,
+        Number(session.totalInputTokens || 0) + Number(session.totalCacheReadTokens || 0),
+      )
       const title = [
         rows.length + ' 轮',
         formatTokens(session.totalTokens) + ' tokens',
+        cacheRate ? translateWith(props.t, 'dock.cache', '缓存命中 {rate}', { rate: cacheRate }) : '',
         model,
         session.currentProvider || '',
       ]
@@ -1175,26 +1214,37 @@ window.__ModuleLoader__.load({
       const data = state.data
       const turnNo = Number(props.turn)
       const session = data && data.session
-      const rows = session && Array.isArray(session.turns) ? session.turns : null
+      const matches = Boolean(props.sessionId) && (!session || !session.id || session.id === props.sessionId)
+      const rows = matches && session && Array.isArray(session.turns) ? session.turns : null
       const row = rows && Number.isFinite(turnNo) ? rows.find(item => Number(item.turn) === turnNo) : null
       const hasRow = !!row && row.credits !== null && row.credits !== undefined
 
       // 轮次刚结束时账本里应已有数据，挂载后短延迟补一次拉取（仓库内部有节流）。
       React.useEffect(() => {
-        if (!hasRow) store.loadSoon(1200)
-      }, [hasRow, turnNo])
+        if (props.sessionId && !hasRow) store.loadSoon(1200)
+      }, [hasRow, turnNo, props.sessionId])
 
-      if (!hasRow) return null
+      if (!matches || !hasRow) return null
       const credits = Number(row.credits)
       const paid = credits > 0
       const label = paid
         ? translateWith(props.t, 'turn.credits', '本轮 ≈{credits} 积分', { credits: formatCredits(credits) })
         : translateWith(props.t, 'turn.free', '本轮未计积分')
       const models = (row.models || []).map(trimModel).filter(Boolean)
-      const title = translateWith(props.t, 'turn.title', '本轮 {tokens} tokens · {models}', {
-        tokens: formatTokens(row.tokens),
-        models: models.length > 0 ? models.join(' / ') : '—',
-      })
+      const cacheRate = formatCacheRate(
+        row.cacheReadTokens,
+        Number(row.inputTokens || 0) + Number(row.cacheReadTokens || 0),
+      )
+      const title = cacheRate
+        ? translateWith(props.t, 'turn.titleCache', '本轮 {tokens} tokens · 缓存命中 {rate} · {models}', {
+            tokens: formatTokens(row.tokens),
+            rate: cacheRate,
+            models: models.length > 0 ? models.join(' / ') : '—',
+          })
+        : translateWith(props.t, 'turn.title', '本轮 {tokens} tokens · {models}', {
+            tokens: formatTokens(row.tokens),
+            models: models.length > 0 ? models.join(' / ') : '—',
+          })
       return h('div', { className: 'wbcd-turn', title }, h(StyleTag), label)
     })
 
@@ -1319,9 +1369,17 @@ window.__ModuleLoader__.load({
         const measuredRows = detail.filter(row => row.measured === true || row.source === 'config')
         const usedRows = detail.filter(row => used.has(trimModel(row.model).toLowerCase()))
         const shown = (usedRows.length > 0 ? usedRows : measuredRows).slice(0, 6)
-        const parts = shown.map(row =>
-          trimModel(row.model) + ' ' + formatRate(row.costPer1k) + ' 积分/千 token' + (row.estimated === true ? marker : ''),
-        )
+        const tokenRates = gateway.tokenRates && typeof gateway.tokenRates === 'object' ? gateway.tokenRates : {}
+        const parts = shown.map(row => {
+          const model = trimModel(row.model)
+          const rates = tokenRates[model.toLowerCase()]
+          if (rates) {
+            return model + ' 输入 ' + formatRate(rates.input) + ' / 缓存 ' + formatRate(rates.cache)
+              + ' / 输出 ' + formatRate(rates.output) + ' 积分/千 token'
+          }
+          return model + ' ' + formatRate(row.costPer1k) + ' 积分/千 token' + (row.estimated === true ? marker : '')
+        })
+        const hasTokenRates = shown.some(row => tokenRates[trimModel(row.model).toLowerCase()])
         const estimatedCount = detail.filter(row => row.estimated === true).length
         const freeCount = detail.filter(row => row.estimated !== true && Number(row.costPer1k) === 0).length
         const extras = []
@@ -1330,8 +1388,9 @@ window.__ModuleLoader__.load({
         }
         if (freeCount > 0) extras.push(tr('settings.priceFreeCount', '{count} 个模型免费', { count: freeCount }))
         const count = detail.length
-        const basis =
-          gateway.priceBasis === 'config'
+        const basis = hasTokenRates
+          ? tr('settings.priceTokenTypes', 'WorkBuddy 按 input / cache / output 分类型实测；缓存命中单独计价 · {count} 个模型', { count })
+          : gateway.priceBasis === 'config'
             ? tr('settings.priceConfig', '在插件配置里覆盖')
             : gateway.priceBasis === 'catalog'
               ? tr('settings.priceCatalog', '按模型倍率折算（以实测单价为基线） · {count} 个模型', { count })

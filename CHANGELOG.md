@@ -3,6 +3,37 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.5.2] - 2026-10-22
+
+### 修复
+
+- **单会话积分被高估数倍**：旧实现把 `usage.totalTokens`（本轮上下文总量，含缓存命中 token）
+  乘以全池 `model_costs` 加权混合单价。实测会话 57.68M tokens 里 57.23M 是缓存命中
+  （99.2%），混合单价把缓存 token 也按未命中输入计价，显示 ≈255 积分，而网关实际扣费约
+  ≈27；同一条历史会话的显示值还会随 EMA 单价漂移。
+  - WorkBuddy 改为按 `input / cache / output` 三类 token 分类型折算，内置
+    `deepseek-v4.1-flash` 实测单价（输入 `0.014444`、缓存 `0.0001962`、输出 `0.059415`
+    积分/千 token），可用新增配置 `tokenRates` 覆盖。
+  - 没有分类型单价的模型回落到 `model_costs` 混合单价，但会话已固定账号时优先使用**该账号
+    自己的**台账，不再拿全池加权平均值；WorkBuddy / Qoder 的同名模型单价索引也按网关拆开，
+    避免跨网关串价。
+- **切换会话时短暂显示上一个会话的积分**：Client 数据仓库的并发请求只按 `inflight` 去重，
+  切会话时旧请求返回后会把旧数据写进新会话，最多持续到下一次 30 秒轮询。现在请求带上会话
+  序号，旧响应直接丢弃，并在结束后立即拉取新会话。
+
+### 变更
+
+- 设置页「折算单价」对 WorkBuddy 模型展开显示 `输入 / 缓存 / 输出` 三类单价，不再只显示
+  混合单价；快照新增 `gateway.tokenRates`。
+- 会话快照新增 `totalInputTokens` / `totalCacheReadTokens` / `totalOutputTokens`，便于核对
+  缓存命中比例与折算依据。
+
+### 说明
+
+- 分类型单价来自本机 2026-10-22 的网关实测（31,846 冷启动 prompt=0.46、同前缀缓存命中
+  31,616=0.01、2,000 输出=0.12 积分）；上游调价后请用 `tokenRates` 覆盖。
+- 本次 Host / Client 都有改动：Host 需重启 DSH 生效，Client 刷新页面即可。
+
 ## [1.5.1] - 2026-10-22
 
 ### 变更
@@ -180,6 +211,7 @@
 - 积分是**折算值**：单价取自网关对上游 `usage.credit` 的实测台账，界面统一带 `≈`。
 - 两个网关都是外部依赖，不在本仓库内；未配置时对应来源不显示。
 
+[1.5.2]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.5.2
 [1.1.1]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.1.1
 [1.1.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Yhx888/dsh-free-egg-credits/releases/tag/v1.0.0

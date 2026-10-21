@@ -17,9 +17,11 @@ composer, at the end of every turn, and in a settings section. The settings page
 **which platform's credits are spent first** (via local new-api channel priorities, so you can
 fall back to WorkBuddy when Qoder is congested).
 
-> Credits are **estimates**: WorkBuddy uses its account `model_costs` ledger and Qoder uses the panel
-> `/usage` ledger (real `credit ÷ total_tokens`) as measured rates; models without measurements are
-> estimated from each gateway's model catalog multipliers. The UI always prefixes values with `≈`.
+> Credits are **estimates**: WorkBuddy prices `input / cache / output` tokens separately using measured
+> rates (cache hits are much cheaper, so a 57M-token context is no longer multiplied by a blended rate
+> and overstated several-fold). Models without token-type rates fall back to the account `model_costs`
+> ledger; Qoder uses the panel `/usage` ledger (real `credit ÷ total_tokens`). Models without any
+> measurement are estimated from catalog multipliers. The UI always prefixes values with `≈`.
 
 ## Quick start
 
@@ -175,7 +177,8 @@ Put this in the target profile's `cordis.patch.yml` (plugin id `free-egg-credits
 | `checkinAfterHour` | `8` | Do not probe before this hour |
 | `checkinRetryMinutes` | `10` | Retry interval after a failure |
 | `refreshSeconds` | `30` | Gateway snapshot cache |
-| `creditsPer1k` | `{}` | Rate overrides (model name → credits per 1k tokens); highest precedence |
+| `creditsPer1k` | `{}` | Blended rate overrides (model name → credits per 1k tokens); highest precedence, but ignores cache discounts — use only for models without token-type rates |
+| `tokenRates` | built-in `deepseek-v4.1-flash` | WorkBuddy per-token-type rates (model name → `{ input, cache, output }`, credits per 1k tokens). Cache hits are priced separately; override here after upstream price changes |
 | `freeEggProviders` | `['free-egg','workbuddy','qoder','new-api']` | DSH providers treated as free-egg: their conversations keep the credits strip visible, and only their turns are priced |
 | `catalogBaseCreditsPer1k` | `0` | Fallback calibration base for catalog-multiplier estimates (credits per 1k tokens per multiplier unit); `0` = auto-calibrate from measured gateway rates only |
 | `qoder` | none | Qoder gateway config: `baseUrl`, `panelPasswordFile`, `panelPassword` (inline fallback), `enabled`. Omit to disable the Qoder source |
@@ -258,8 +261,9 @@ permissions) or inline in `accessToken`; **never commit it**.
 | Session serving account | WorkBuddy panel `token_usage.last_used_at` / `last_model`; Qoder panel `GET /usage/recent` (`account` / `model` / `at`, cached for 3 s). After each reply the host waits 1.5 s, refreshes both gateways and matches the latest request to that session by timestamp; the first match is pinned and never switches |
 | Today's usage per account | WorkBuddy: sum of balance decreases between snapshots (the gateway deducts the upstream `credit` from account balance); the ledger is persisted to `<DSH_HOME>/free-egg-credits/daily.json` and continues across DSH restarts. Qoder: sum of `credit` over today's `/usage/recent` rows where `billable !== false` (`billable=false` free rows are excluded; older gateways without the field count as billed) |
 | Daily credit budget / used today | WorkBuddy: `daily_credit_spent` / `daily_credit_limit` / `daily_credit_capped` on `GET /panel/api/overview` account rows; Qoder: `dailyCreditsToday` / `dailyCreditLimit` / `creditLimitReached` from `GET /accounts` (panel token handled on the host), fetched in the same refresh as `/credits/summary` (60 s cache kept). Qoder's `dailyCreditsToday` is a nominal figure (free calls still accrue `credit`), so the UI uses the local ledger filtered by `billable` instead. Missing fields (old gateways) stay undefined/0/false and the UI falls back to the old "today's usage" rendering; a failed `/accounts` read only leaves the budget fields absent and never fails the Qoder credits refresh |
-| Tokens per turn | `assistant/message.usage` in DSH session events (folded on the host, never persisted) |
-| Credit rate (WorkBuddy measured) | `model_costs[].cost_per_1k` from gateway account state, weighted by sample count |
+| Tokens per turn | `assistant/message.usage` in DSH session events (folded on the host, never persisted); `inputTokens` / `cacheReadTokens` / `outputTokens` are kept separately for token-type pricing |
+| Credit rate (WorkBuddy token types) | Built-in `tokenRates` (measured 2026-10-22): `deepseek-v4.1-flash` input `0.014444`, cache `0.0001962`, output `0.059415` credits per 1k tokens; override with `tokenRates` after upstream price changes |
+| Credit rate (WorkBuddy blended fallback) | For models without token-type rates: `model_costs[].cost_per_1k`. When a session is pinned to an account, that account's own ledger is used instead of a pool-wide weighted average |
 | Credit rate (Qoder measured) | Qoder panel `GET /usage` `by_model` ledger: real `credit ÷ total_tokens` (includes cache-hit discounts); cached for 5 minutes |
 | Credit rate (estimated) | Model catalog multipliers: WorkBuddy `GET /v1/models` `credits` (e.g. `x0.11`), Qoder `GET /models` `price_factor`; each gateway is calibrated against its own measured rates; a multiplier of `0` means a free model (0 credits) |
 | free-egg aggregation aliases | When e.g. `deepseek-v4.1-flash` is actually served by Qoder `DeepSeek-Flash`, a version-insensitive normalized match against measured rates is used; override with `creditsPer1k` when ambiguous |
@@ -327,6 +331,7 @@ Please report security issues privately as described in [SECURITY.md](SECURITY.m
 ## Known limitations
 
 - Credits are estimates: actual charges during upstream free periods can be lower, hence the `≈`.
+- WorkBuddy token-type rates are measured on this machine; cache-hit rates are far below uncached input. If upstream changes prices, override `tokenRates`. Models without token-type rates still use the blended `model_costs` rate and drift when the cache mix changes.
 - The serving-account attribution comes from the gateway's **write-back after a request completes**: it does not change during streaming and updates once the turn finishes (usually within seconds). It is pinned per session, so two concurrent conversations keep their own accounts; if the very first match is wrong (two requests completing too close together), that session keeps the first result — the trade-off for never flip-flopping.
 - WorkBuddy's "today's usage" needs a balance baseline: the new host starts accumulating from the first balance it sees for that account, so on the very first day it may only count from when the host started (the gateway has no per-day credit API); once persisted, DSH restarts continue the ledger. Qoder's today usage is recomputed exactly from its usage ledger since local midnight.
 - Only conversations from free-egg providers (by default `free-egg` / `workbuddy` / `qoder` /

@@ -23,5 +23,7 @@ jobs:
       - name: JSON 解析检查
         run: |
           node -e "const fs=require('fs'); for (const f of ['package.json','locale/zh.json','locale/en.json']) JSON.parse(fs.readFileSync(f,'utf8')); console.log('json ok')"
+      - name: 单会话积分回归测试
+        run: npm test
       - name: 打包清单检查
         run: npm pack --dry-run

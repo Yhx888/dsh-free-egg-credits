@@ -15,7 +15,7 @@
 每轮对话末尾和设置页各有一个落点。设置页还能一键切换**优先消耗哪个平台的积分**
 （基于本机 new-api 渠道优先级，Qoder 拥堵时点一下切回 WorkBuddy）。
 
-> 积分为**折算值**：WorkBuddy 用账号 `model_costs` 台账、Qoder 用面板 `/usage` 台账（真实 `credit ÷ total_tokens`）作为实测单价；未实测的模型按各网关的模型目录倍率折算，界面统一带 `≈` 标记。
+> 积分为**折算值**：WorkBuddy 优先按 `input / cache / output` 分类型实测单价折算（缓存命中单独计价，避免把 57M context 乘混合单价高估数倍），没有分类型单价的模型回落到账号 `model_costs` 台账；Qoder 用面板 `/usage` 台账（真实 `credit ÷ total_tokens`）。未实测的模型按各网关的模型目录倍率折算，界面统一带 `≈` 标记。
 
 ## 快速开始
 
@@ -158,7 +158,8 @@ New-Item -ItemType Junction `
 | `checkinAfterHour` | `8` | 几点后才自动探测（避免凌晨误触发） |
 | `checkinRetryMinutes` | `10` | 失败重试间隔 |
 | `refreshSeconds` | `30` | 网关快照缓存 |
-| `creditsPer1k` | `{}` | 单价覆盖（模型名 → 积分/千 token），优先级最高 |
+| `creditsPer1k` | `{}` | 混合单价覆盖（模型名 → 积分/千 token），优先级最高；会忽略缓存折扣，仅建议对没有分类型单价的模型使用 |
+| `tokenRates` | 内置 `deepseek-v4.1-flash` | WorkBuddy 逐 token 类型单价（模型名 → `{ input, cache, output }`，积分/千 token）。缓存命中单独计价，避免高估；上游调价后可在此覆盖 |
 | `freeEggProviders` | `['free-egg','workbuddy','qoder','new-api']` | 哪些 DSH provider 视为「free-egg 模型」：这些 provider 的对话底栏常显积分预估，且只有它们计积分 |
 | `catalogBaseCreditsPer1k` | `0` | 目录倍率折算的兜底基线（积分/千 token/倍率单位）；`0` = 只用网关实测台账自动校准 |
 | `qoder` | 无 | Qoder 网关子配置：`baseUrl`、`panelPasswordFile`（面板密码文件）、`panelPassword`（内联兜底）、`enabled`。不配置则不启用 Qoder 来源 |
@@ -226,8 +227,9 @@ DeepSeek 请求由本机 new-api（默认 `http://127.0.0.1:3001`）在 WorkBudd
 | 会话消耗账号 | WorkBuddy 面板 `token_usage.last_used_at` / `last_model`；Qoder 面板 `GET /usage/recent`（`account` / `model` / `at`，3 秒缓存）。每轮回复结束后 Host 侧延迟 1.5 秒刷新两侧网关，按事件时刻就近匹配到该会话；首次匹配后固定，不再换号 |
 | 账号当日消耗 | WorkBuddy：累加两次快照之间的余额下降量（网关按上游 `credit` 扣减账号余额），账本落盘 `<DSH_HOME>/free-egg-credits/daily.json`，重启 DSH 继续算；Qoder：当天 `/usage/recent` 台账中 `billable !== false` 的 `credit` 逐条累加（免费模型行 `billable=false` 不计；缺该字段的旧网关按计费处理） |
 | 每日积分预算 / 今日已用 | WorkBuddy：面板 `GET /panel/api/overview` 账号行的 `daily_credit_spent` / `daily_credit_limit` / `daily_credit_capped`；Qoder：面板 `GET /accounts`（面板 token 已封装）的 `dailyCreditsToday` / `dailyCreditLimit` / `creditLimitReached`，与 `/credits/summary` 并进同一次刷新（保留 60 秒缓存）。Qoder 的 `dailyCreditsToday` 是名义口径（免费调用也累计 `credit`），展示侧改用按 `billable` 过滤后的本地台账；字段缺失（旧网关）时保持 undefined/0/false，界面回落旧的「今日消耗」样式；`/accounts` 失败只让预算字段缺省，不影响 Qoder 积分刷新 |
-| 每轮 token | DSH Session 事件里的 `assistant/message.usage`（Host 侧折叠，不落盘） |
-| 积分单价（WorkBuddy 实测） | 网关账号状态里的 `model_costs[].cost_per_1k`（按样本数加权） |
+| 每轮 token | DSH Session 事件里的 `assistant/message.usage`（Host 侧折叠，不落盘）；同时保留 `inputTokens` / `cacheReadTokens` / `outputTokens` 三类，用于分类型折算 |
+| 积分单价（WorkBuddy 分类型） | 内置 `tokenRates`（2026-10-22 实测）：`deepseek-v4.1-flash` 输入 `0.014444`、缓存 `0.0001962`、输出 `0.059415` 积分/千 token；上游调价或换模型时可用 `tokenRates` 覆盖 |
+| 积分单价（WorkBuddy 混合兜底） | 没有分类型单价的模型：网关账号状态里的 `model_costs[].cost_per_1k`；会话已固定账号时优先该账号自己的台账，不再拿全池加权平均值 |
 | 积分单价（Qoder 实测） | Qoder 面板 `GET /usage` 的 `by_model` 台账：真实 `credit ÷ total_tokens`（含缓存命中折扣），5 分钟缓存 |
 | 积分单价（未实测） | 模型目录倍率：WorkBuddy `GET /v1/models` 的 `credits`（如 `x0.11`）、Qoder `GET /models` 的 `price_factor`；两台网关各自用本网关实测数据校准基线；倍率为 `0` 视为免费模型（0 积分） |
 | free-egg 聚合别名 | 如 `deepseek-v4.1-flash` 实际由 Qoder `DeepSeek-Flash` 承载时，用「去版本号归一 + 实测单价」兜底匹配；歧义时可用 `creditsPer1k` 覆盖 |
@@ -282,6 +284,7 @@ DeepSeek 请求由本机 new-api（默认 `http://127.0.0.1:3001`）在 WorkBudd
 ## 已知限制
 
 - 积分为折算值：上游限免时段实际扣费可能更低，所以界面统一带 `≈`。
+- WorkBuddy 的分类型单价来自本机实测，缓存命中价远低于未命中输入；如果上游调价，用 `tokenRates` 覆盖。没有分类型单价的模型仍按 `model_costs` 混合单价估算，缓存比例变化时会有偏差。
 - 账号归属来自网关**请求完成后的回写**：流式生成期间不会变，要等这一轮结束才更新（通常数秒内）。归属按会话固定，两个并发会话各记各的账号；但如果首轮归属就匹配错（两个会话的请求完成时刻太接近），该会话会一直沿用第一次结果——这是「不来回切」的取舍。
 - WorkBuddy 的「当日消耗」需要先有余额基线：新版 Host 在某个账号上第一次看到余额后开始累计，首次运行当天可能只从运行时算起（网关没有按日积分接口）；账本落盘后重启 DSH 不会清零。Qoder 的当日消耗来自用量台账，可从当天 0 点起精确重算。
 - 只有 free-egg provider（默认 `free-egg` / `workbuddy` / `qoder` / `new-api`）的对话计积分；其他 provider（如 DeepSeek 官方账号）只显示 token、积分为 `—`，底栏也不显示。

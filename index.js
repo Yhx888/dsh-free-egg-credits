@@ -32,6 +32,9 @@ const DEFAULTS = {
   checkinRetryMinutes: 10,
   refreshSeconds: 30,
   creditsPer1k: {},
+  // WorkBuddy 逐 token 类型单价覆盖（模型名 → { input, cache, output }，积分/千 token）。
+  // 留空使用内置实测值；creditsPer1k 仍是优先级最高的混合单价覆盖。
+  tokenRates: {},
   // 哪些 DSH provider 算「free-egg 模型」：这些 provider 的对话即使还没算出单价，
   // 底栏也要显示积分预估。
   freeEggProviders: ['free-egg', 'workbuddy', 'qoder', 'new-api'],
@@ -131,6 +134,10 @@ export function apply(ctx, rawConfig = {}) {
   const opts = normalizeConfig(rawConfig)
   const state = createState(loadDailyState())
   state.freeEggProviders = new Set(opts.freeEggProviders)
+  state.tokenRates = opts.tokenRates
+  state.creditsOverride = new Set(
+    Object.keys(opts.creditsPer1k || {}).map(model => stripRealm(model).toLowerCase()).filter(Boolean),
+  )
   const log = makeLogger()
   const gateway = createGateway(opts, log)
   const qoderGateway = opts.qoder ? createQoderGateway(opts, log) : null
@@ -403,6 +410,7 @@ function normalizeConfig(raw) {
     checkinRetryMinutes: clampInt(source.checkinRetryMinutes, 1, 720, DEFAULTS.checkinRetryMinutes),
     refreshSeconds: clampInt(source.refreshSeconds, 5, 3600, DEFAULTS.refreshSeconds),
     creditsPer1k: source.creditsPer1k && typeof source.creditsPer1k === 'object' ? source.creditsPer1k : {},
+    tokenRates: normalizeTokenRates(source.tokenRates),
     freeEggProviders: normalizeProviders(source.freeEggProviders),
     catalogBaseCreditsPer1k: Math.max(0, toNumber(source.catalogBaseCreditsPer1k) || 0),
     // Qoder 反代网关（qoder2api-hub）：null = 未配置不启用
@@ -418,6 +426,40 @@ function normalizeProviders(raw) {
     .map(value => String(value || '').trim().toLowerCase())
     .filter(Boolean)
   return providers.length > 0 ? [...new Set(providers)] : DEFAULTS.freeEggProviders
+}
+
+/**
+ * WorkBuddy 逐 token 类型单价：模型名 → 积分/千 token。
+ * 内置值来自 2026-10-22 对本地 workbuddy2api 的实测（冷启动 31,846 prompt=0.46、
+ * 同前缀缓存命中 31,616=0.01、2,000 输出=0.12）；上游调价后可用 tokenRates 覆盖。
+ * 没列出的模型回落到 model_costs 实测/目录倍率，不套用其他模型的缓存折扣。
+ */
+const DEFAULT_TOKEN_RATES = {
+  'deepseek-v4.1-flash': { input: 0.014444, cache: 0.0001962, output: 0.059415 },
+}
+
+function normalizeTokenRates(raw) {
+  const out = new Map()
+  for (const [model, rates] of Object.entries(DEFAULT_TOKEN_RATES)) {
+    out.set(model, { ...rates })
+  }
+  if (!raw || typeof raw !== 'object') return out
+  for (const [rawModel, value] of Object.entries(raw)) {
+    const model = stripRealm(rawModel).toLowerCase()
+    if (!model || !value || typeof value !== 'object') continue
+    const rates = {}
+    for (const key of ['input', 'cache', 'output']) {
+      const number = Number(value[key])
+      if (!Number.isFinite(number) || number < 0) {
+        rates[key] = null
+        break
+      }
+      rates[key] = number
+    }
+    if (rates.input === null || rates.cache === null || rates.output === null) continue
+    out.set(model, rates)
+  }
+  return out
 }
 
 /** Qoder 网关子配置：只认 baseUrl / panelPasswordFile / panelPassword / enabled。 */
@@ -1367,6 +1409,17 @@ function createState(persistedDaily) {
     // 单价索引：精确 key → 候选；归一 key → 实测候选（给聚合网关的别名兜底）
     priceIndex: new Map(),
     priceNormalized: new Map(),
+    // 按网关拆分的单价索引：WorkBuddy / Qoder 同名模型的积分单价不能混用
+    priceIndexByGateway: new Map(),
+    priceNormalizedByGateway: new Map(),
+    // 每个 WorkBuddy 账号自己的实测单价：会话固定在哪个号就用哪个号的台账
+    priceByAccount: new Map(),
+    // 配置 creditsPer1k 的精确覆盖：优先级最高，独立于网关/账号索引
+    configPrice: new Map(),
+    // WorkBuddy 逐 token 类型单价（模型名 → { input, cache, output }，积分/千 token）
+    tokenRates: new Map(),
+    // 配置 creditsPer1k 覆盖过的模型：这些模型仍按混合单价折算，不套 tokenRates
+    creditsOverride: new Set(),
     // 哪些 DSH provider 视为 free-egg 模型（不区分大小写）
     freeEggProviders: new Set(),
   }
@@ -1601,44 +1654,97 @@ function normalizeModelKey(model) {
 }
 
 /**
- * 查单价。优先级：配置 > 免费 > 精确实测 > 归一实测（仅 free-egg 聚合模型）> 目录估价。
- * 归一实测是给聚合网关兜底的：free-egg 暴露的 deepseek-v4.1-flash 实际可能由
- * Qoder 的 DeepSeek-Flash 承载，两者名字不同但同一模型。
+ * 在一个「同网关」的单价索引里查价。gateway 为空 = 不限网关（配置覆盖）；
+ * 有 gateway 时只接受该网关的条目或全局配置条目，避免把 WorkBuddy 的实测单价
+ * 套到 Qoder 的会话上。
  */
-function resolvePrice(state, model, allowAlias) {
+function lookupPrice(index, normalizedIndex, model, allowAlias, gateway) {
+  if (!(index instanceof Map)) return null
+  const compatible = entry => !gateway || !entry.gateway || entry.gateway === gateway
   const key = String(model || '').trim().toLowerCase()
-  const exact = key && state.priceIndex instanceof Map ? state.priceIndex.get(key) : null
-  if (exact && pricePriority(exact) >= PRICE_PRIORITY.measured) {
+  const exact = key ? index.get(key) : null
+  if (exact && compatible(exact) && pricePriority(exact) >= PRICE_PRIORITY.measured) {
     return {
       rate: exact.rate,
       source: exact.source,
       measured: exact.measured === true,
       free: exact.free === true,
+      gateway: exact.gateway || gateway || '',
     }
   }
   if (allowAlias) {
     const normalized = normalizeModelKey(model)
-    const list = normalized && state.priceNormalized instanceof Map ? state.priceNormalized.get(normalized) : null
+    const list = normalized && normalizedIndex instanceof Map ? normalizedIndex.get(normalized) : null
     if (Array.isArray(list) && list.length > 0) {
-      let sum = 0
-      for (const entry of list) sum += entry.rate
-      return {
-        rate: sum / list.length,
-        source: list.length === 1 ? list[0].source : 'mixed-measured',
-        measured: true,
-        free: false,
+      const usable = list.filter(compatible)
+      if (usable.length > 0) {
+        let sum = 0
+        for (const entry of usable) sum += entry.rate
+        return {
+          rate: sum / usable.length,
+          source: usable.length === 1 ? usable[0].source : 'mixed-measured',
+          measured: true,
+          free: false,
+          gateway: usable[0].gateway || gateway || '',
+        }
       }
     }
   }
-  if (exact) {
+  if (exact && compatible(exact)) {
     return {
       rate: exact.rate,
       source: exact.source,
       measured: false,
       free: exact.free === true,
+      gateway: exact.gateway || gateway || '',
     }
   }
   return null
+}
+
+/**
+ * 查单价。优先级：配置 > 免费 > 精确实测 > 归一实测（仅 free-egg 聚合模型）> 目录估价。
+ * 传入 gateway/uid 时先查该网关、该账号自己的台账：同名模型在 WorkBuddy / Qoder
+ * 以及不同 WorkBuddy 账号之间的缓存命中率差异很大，不能拿全池加权平均值折算单会话。
+ * 归一实测是给聚合网关兜底的：free-egg 暴露的 deepseek-v4.1-flash 实际可能由
+ * Qoder 的 DeepSeek-Flash 承载，两者名字不同但同一模型。
+ */
+function resolvePrice(state, model, allowAlias, gateway, uid) {
+  const key = String(model || '').trim().toLowerCase()
+  // 0) 配置 creditsPer1k 最高优先级，独立于网关/账号/目录。
+  const configured = state.configPrice instanceof Map ? state.configPrice.get(key) : undefined
+  if (configured !== undefined) {
+    return { rate: configured, source: 'config', measured: false, free: false, gateway: gateway || '' }
+  }
+  // 1) 会话已固定到某个 WorkBuddy 账号 → 优先该账号自己的实测台账。
+  //    但配置 creditsPer1k 是最高优先级覆盖，不能被账号台账压过。
+  if (uid && gateway === 'workbuddy' && state.priceByAccount instanceof Map
+    && !(state.creditsOverride instanceof Set && state.creditsOverride.has(key))) {
+    const byModel = state.priceByAccount.get(uid)
+    const entry = byModel && byModel.get(key)
+    if (entry) {
+      return {
+        rate: entry.rate,
+        source: 'gateway-account',
+        measured: true,
+        free: false,
+        gateway: 'workbuddy',
+      }
+    }
+  }
+  // 2) 该网关自己的索引（同一模型的 WorkBuddy / Qoder 单价互不污染）。
+  if (gateway) {
+    const hit = lookupPrice(
+      state.priceIndexByGateway instanceof Map ? state.priceIndexByGateway.get(gateway) : null,
+      state.priceNormalizedByGateway instanceof Map ? state.priceNormalizedByGateway.get(gateway) : null,
+      model,
+      allowAlias,
+      gateway,
+    )
+    if (hit) return hit
+  }
+  // 3) 全局索引（配置覆盖 / 只有一边有目录时的估算）。
+  return lookupPrice(state.priceIndex, state.priceNormalized, model, allowAlias, gateway)
 }
 
 function buildPrice(state, opts) {
@@ -1651,11 +1757,15 @@ function buildPrice(state, opts) {
   }
 
   // 1) WorkBuddy 实测台账：按 (账号, 模型) 实测扣费按样本数加权。
+  //    同时保留每个账号自己的单价：缓存命中率因账号而异，全池加权只能当兜底。
   const wbMeasured = new Map()
+  const byAccount = new Map()
   for (const account of state.accounts) {
+    const accountMap = new Map()
     for (const row of account.modelCosts) {
       const model = stripRealm(row.model)
       if (!model || !Number.isFinite(row.costPer1k) || row.costPer1k < 0) continue
+      accountMap.set(model.toLowerCase(), { rate: row.costPer1k, samples: toNumber(row.samples) })
       const samples = Math.max(1, Math.floor(row.samples) || 1)
       const current = wbMeasured.get(model) || { weighted: 0, samples: 0, rows: [] }
       current.weighted += row.costPer1k * samples
@@ -1668,6 +1778,7 @@ function buildPrice(state, opts) {
       })
       wbMeasured.set(model, current)
     }
+    if (account.uid && accountMap.size > 0) byAccount.set(account.uid, accountMap)
   }
   for (const [model, current] of wbMeasured) {
     if (current.samples <= 0) continue
@@ -1678,9 +1789,11 @@ function buildPrice(state, opts) {
       measured: true,
       samples: current.samples,
       accounts: current.rows,
+      gateway: 'workbuddy',
       canonical: true,
     })
   }
+  state.priceByAccount = byAccount
 
   // 2) Qoder 实测台账：/usage 的 by_model（credit ÷ total_tokens）。
   //    缓存命中的输入 token 计费远低于未命中，所以必须用「真实扣费 ÷ 真实 token」，
@@ -1705,6 +1818,7 @@ function buildPrice(state, opts) {
       source: 'qoder-usage',
       measured: true,
       tokens: item.tokens,
+      gateway: 'qoder',
       canonical: true,
     })
   }
@@ -1715,7 +1829,7 @@ function buildPrice(state, opts) {
     for (const key of row.aliases) {
       const alias = stripRealm(key)
       if (!alias || alias.toLowerCase() === id.toLowerCase()) continue
-      pushEntry({ model: alias, rate: item.rate, source: 'qoder-usage', measured: true, canonical: false })
+      pushEntry({ model: alias, rate: item.rate, source: 'qoder-usage', measured: true, gateway: 'qoder', canonical: false })
     }
   }
 
@@ -1797,6 +1911,7 @@ function buildPrice(state, opts) {
         source: 'catalog',
         measured: false,
         free: isFree,
+        gateway: entry.gateway,
         canonical: index === 0,
       })
     })
@@ -1804,31 +1919,51 @@ function buildPrice(state, opts) {
 
   // 6) 配置覆盖优先级最高。
   let overridden = false
+  state.configPrice = new Map()
   for (const [rawModel, rawValue] of Object.entries(opts.creditsPer1k || {})) {
     const model = stripRealm(rawModel)
     const rate = Number(rawValue)
     if (!model || !Number.isFinite(rate) || rate < 0) continue
-    pushEntry({ model, rate, source: 'config', measured: false, canonical: true })
+    state.configPrice.set(model.toLowerCase(), rate)
+    pushEntry({ model, rate, source: 'config', measured: false, gateway: '', canonical: true })
     overridden = true
   }
 
   // 7) 建索引：精确 key 取最高优先级；归一 key 收集实测候选（给聚合别名兜底）。
+  //    另外按网关各建一份，会话折算时只读自己网关的那份。
   const index = new Map()
   const normalized = new Map()
+  const indexByGateway = new Map()
+  const normalizedByGateway = new Map()
+  const getMap = (container, key) => {
+    if (!container.has(key)) container.set(key, new Map())
+    return container.get(key)
+  }
+  const pushNormalized = (container, entry) => {
+    const normalizedKey = normalizeModelKey(entry.model)
+    if (!normalizedKey) return
+    if (!container.has(normalizedKey)) container.set(normalizedKey, [])
+    container.get(normalizedKey).push(entry)
+  }
   for (const entry of entries) {
     const key = entry.model.toLowerCase()
     const current = index.get(key)
     if (!current || pricePriority(entry) > pricePriority(current)) index.set(key, entry)
-    if (entry.measured && !entry.free && !freeModels.has(key)) {
-      const normalizedKey = normalizeModelKey(entry.model)
-      if (!normalizedKey) continue
-      const list = normalized.get(normalizedKey) || []
-      list.push(entry)
-      normalized.set(normalizedKey, list)
+    if (entry.measured && !entry.free && !freeModels.has(key)) pushNormalized(normalized, entry)
+    if (entry.gateway) {
+      const gatewayIndex = getMap(indexByGateway, entry.gateway)
+      const gatewayCurrent = gatewayIndex.get(key)
+      if (!gatewayCurrent || pricePriority(entry) > pricePriority(gatewayCurrent)) gatewayIndex.set(key, entry)
+      if (entry.measured && !entry.free && !freeModels.has(key)) {
+        if (!normalizedByGateway.has(entry.gateway)) normalizedByGateway.set(entry.gateway, new Map())
+        pushNormalized(normalizedByGateway.get(entry.gateway), entry)
+      }
     }
   }
   state.priceIndex = index
   state.priceNormalized = normalized
+  state.priceIndexByGateway = indexByGateway
+  state.priceNormalizedByGateway = normalizedByGateway
 
   const price = {}
   for (const [key, entry] of index) price[key] = entry.rate
@@ -1871,13 +2006,24 @@ function buildPrice(state, opts) {
 // Session 账本：逐轮 token
 // ---------------------------------------------------------------------------
 
-function usageTokens(usage) {
-  if (!usage || typeof usage !== 'object') return 0
-  const total = Number(usage.totalTokens)
-  if (Number.isFinite(total) && total > 0) return total
+/**
+ * DSH 的 usage.totalTokens 是「本轮上下文总量」= 未命中输入 + 缓存命中输入 + 输出。
+ * 只拿 total 乘一个混合单价会忽略缓存折扣（实测本机会话缓存命中 99%+，曾高估 8 倍），
+ * 所以账本必须同时保留 input/cache/output 三类 token，交给分类型单价折算。
+ */
+function usageBreakdown(usage) {
+  if (!usage || typeof usage !== 'object') return { total: 0, input: 0, cache: 0, output: 0 }
   const input = toNumber(usage.inputTokens)
+  const cache = toNumber(usage.cacheReadTokens)
   const output = toNumber(usage.outputTokens)
-  return input + output > 0 ? input + output : 0
+  const sum = input + cache + output
+  const total = Number(usage.totalTokens)
+  return {
+    total: Number.isFinite(total) && total > 0 ? total : sum,
+    input,
+    cache,
+    output,
+  }
 }
 
 /** 助手消息里的 provider + model：provider 决定这条对话算不算 free-egg 模型。 */
@@ -1927,9 +2073,19 @@ function createLedger(ctx, log) {
     return current
   }
 
-  function accumulate(target, turn, tokens, provider, model) {
-    const current = target.get(turn) || { tokens: 0, models: new Set(), providers: new Set() }
-    current.tokens += tokens
+  function accumulate(target, turn, usage, provider, model) {
+    const current = target.get(turn) || {
+      tokens: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      outputTokens: 0,
+      models: new Set(),
+      providers: new Set(),
+    }
+    current.tokens += usage.total
+    current.inputTokens += usage.input
+    current.cacheReadTokens += usage.cache
+    current.outputTokens += usage.output
     if (provider) current.providers.add(provider)
     if (model) current.models.add(model)
     target.set(turn, current)
@@ -1946,12 +2102,12 @@ function createLedger(ctx, log) {
     }
     if (event.type !== 'assistant/message') return
     const data = event.data || {}
-    const tokens = usageTokens(data.usage)
+    const usage = usageBreakdown(data.usage)
     const turn = Number(data.turn)
-    if (tokens <= 0 || !Number.isFinite(turn)) return
+    if (usage.total <= 0 || !Number.isFinite(turn)) return
     const source = sourceOfEvent(event)
     if (source.provider) current.providers.add(source.provider)
-    accumulate(current.turns, turn, tokens, source.provider, source.model)
+    accumulate(current.turns, turn, usage, source.provider, source.model)
   }
 
   async function readEvents(sessionId) {
@@ -2014,12 +2170,12 @@ function createLedger(ctx, log) {
         }
         if (event.type !== 'assistant/message') continue
         const data = event.data || {}
-        const tokens = usageTokens(data.usage)
+        const usage = usageBreakdown(data.usage)
         const turn = Number(data.turn)
-        if (tokens <= 0 || !Number.isFinite(turn)) continue
+        if (usage.total <= 0 || !Number.isFinite(turn)) continue
         const source = sourceOfEvent(event)
         if (source.provider) providers.add(source.provider)
-        accumulate(folded, turn, tokens, source.provider, source.model)
+        accumulate(folded, turn, usage, source.provider, source.model)
       }
       // 日志折叠是权威全集；读取期间新到的实时轮次保留下来。
       for (const [turn, data] of current.turns) {
@@ -2156,24 +2312,83 @@ function isFreeEggProvider(state, provider) {
   return state.freeEggProviders instanceof Set && state.freeEggProviders.has(name)
 }
 
+/** provider → 计费网关；free-egg 是 new-api 聚合入口，默认先按 WorkBuddy 算。 */
+function gatewayOfProvider(provider) {
+  const name = String(provider || '').trim().toLowerCase()
+  if (name === 'qoder') return 'qoder'
+  if (name === 'workbuddy' || name === 'free-egg' || name === 'new-api') return 'workbuddy'
+  return ''
+}
+
+function gatewayOfProviders(providers) {
+  for (const provider of providers || []) {
+    const gateway = gatewayOfProvider(provider)
+    if (gateway) return gateway
+  }
+  return ''
+}
+
+/** 取这一轮所有模型的分类型单价；任何一个模型缺失就整体回落到混合单价。 */
+function tokenRatesOf(state, models) {
+  if (!(state.tokenRates instanceof Map) || !Array.isArray(models) || models.length === 0) return null
+  const rates = []
+  for (const model of models) {
+    const key = stripRealm(model).toLowerCase()
+    const rate = key ? state.tokenRates.get(key) : null
+    if (!rate) return null
+    rates.push(rate)
+  }
+  const average = { input: 0, cache: 0, output: 0 }
+  for (const rate of rates) {
+    average.input += rate.input
+    average.cache += rate.cache
+    average.output += rate.output
+  }
+  average.input /= rates.length
+  average.cache /= rates.length
+  average.output /= rates.length
+  return average
+}
+
 /**
  * 折算一轮积分。providers 为空表示来源未知（旧数据）→ 按模型名尽量折算；
  * 有 provider 但不是 free-egg → 不计积分（返回 null）。
- * free-egg provider 的模型可能是聚合别名，允许用「归一实测」兜底。
+ * gateway/uid 来自会话固定的承载账号：同名模型在 WorkBuddy / Qoder、不同账号之间
+ * 的缓存命中率差异很大，必须按会话实际来源取单价。
  */
-function estimateCredits(state, tokens, models, providers) {
-  if (!tokens || tokens <= 0) return 0
+function estimateCredits(state, usage, models, providers, gateway, uid) {
+  if (!usage || !(usage.total > 0)) return 0
   const list = providers ? [...providers] : []
   const allowAlias = list.length === 0 || list.some(provider => isFreeEggProvider(state, provider))
   if (list.length > 0 && !allowAlias) return null
-  const prices = []
-  for (const model of models || []) {
-    const resolved = resolvePrice(state, model, allowAlias)
-    if (resolved) prices.push(resolved.rate)
+  const effectiveGateway = gateway || gatewayOfProviders(list)
+  const modelList = models || []
+  const resolvedPrices = []
+  for (const model of modelList) {
+    const resolved = resolvePrice(state, model, allowAlias, effectiveGateway, uid)
+    if (resolved) resolvedPrices.push(resolved)
   }
-  if (prices.length === 0) return null
-  const per1k = prices.reduce((sum, value) => sum + value, 0) / prices.length
-  return round2((tokens * per1k) / 1000)
+  // 目录倍率 0 = 免费模型：免费是确定值，优先于任何分类型单价。
+  if (resolvedPrices.some(price => price.free === true)) return 0
+  // 配置了 creditsPer1k 的模型保持旧口径：混合单价覆盖优先于分类型单价。
+  const overridden = modelList.some(model => state.creditsOverride instanceof Set
+    && state.creditsOverride.has(stripRealm(model).toLowerCase()))
+  // 旧会话事件可能只有 totalTokens、没有三类明细：此时退回混合单价，不能把 0 当真实用量。
+  const hasBreakdown = usage.input > 0 || usage.cache > 0 || usage.output > 0
+  if (!overridden && hasBreakdown && effectiveGateway === 'workbuddy') {
+    const rates = tokenRatesOf(state, modelList)
+    if (rates) {
+      const credits = (
+        usage.input * rates.input
+        + usage.cache * rates.cache
+        + usage.output * rates.output
+      ) / 1000
+      return round2(credits)
+    }
+  }
+  if (resolvedPrices.length === 0) return null
+  const per1k = resolvedPrices.reduce((sum, price) => sum + price.rate, 0) / resolvedPrices.length
+  return round2((usage.total * per1k) / 1000)
 }
 
 function sessionView(state, ledger, sessionId) {
@@ -2181,6 +2396,9 @@ function sessionView(state, ledger, sessionId) {
   const blank = {
     turns: [],
     totalTokens: 0,
+    totalInputTokens: 0,
+    totalCacheReadTokens: 0,
+    totalOutputTokens: 0,
     totalCredits: 0,
     pricedTurns: 0,
     known: false,
@@ -2195,22 +2413,46 @@ function sessionView(state, ledger, sessionId) {
   const current = ledger.peek(id)
   if (!current) return { id, ...blank }
 
+  const record = state.activity.bySession.get(id)
+  const pinnedGateway = record && record.source ? record.source : ''
+  const pinnedUid = record && record.uid ? record.uid : ''
   const turns = []
   let totalTokens = 0
+  let totalInputTokens = 0
+  let totalCacheReadTokens = 0
+  let totalOutputTokens = 0
   let totalCredits = 0
   let pricedTurns = 0
   let missingPrice = false
   for (const [turn, data] of [...current.turns.entries()].sort((left, right) => left[0] - right[0])) {
     const models = [...data.models]
     const providers = [...(data.providers || [])]
-    const credits = estimateCredits(state, data.tokens, models, providers)
+    const usage = {
+      total: data.tokens,
+      input: toNumber(data.inputTokens),
+      cache: toNumber(data.cacheReadTokens),
+      output: toNumber(data.outputTokens),
+    }
+    const credits = estimateCredits(state, usage, models, providers, pinnedGateway, pinnedUid)
     if (credits === null) missingPrice = true
     else {
       totalCredits += credits
       pricedTurns += 1
     }
-    totalTokens += data.tokens
-    turns.push({ turn, tokens: data.tokens, models, providers, credits })
+    totalTokens += usage.total
+    totalInputTokens += usage.input
+    totalCacheReadTokens += usage.cache
+    totalOutputTokens += usage.output
+    turns.push({
+      turn,
+      tokens: usage.total,
+      inputTokens: usage.input,
+      cacheReadTokens: usage.cache,
+      outputTokens: usage.output,
+      models,
+      providers,
+      credits,
+    })
   }
 
   const providers = new Set(current.providers || [])
@@ -2229,6 +2471,9 @@ function sessionView(state, ledger, sessionId) {
     id,
     turns,
     totalTokens,
+    totalInputTokens,
+    totalCacheReadTokens,
+    totalOutputTokens,
     totalCredits: round2(totalCredits),
     pricedTurns,
     known: current.loaded || current.turns.size > 0,
@@ -2331,6 +2576,9 @@ function buildPayload(state, ledger, opts, sessionId, activitySessionId) {
       totalCredits,
       priceByModel: state.price,
       priceDetail: state.priceDetail,
+      // 逐 token 类型单价（积分/千 token）：设置页展开显示，和「混合单价」区分开，
+      // 避免把 57M context × 混合单价算出的虚高值当成真实扣费。
+      tokenRates: Object.fromEntries(state.tokenRates instanceof Map ? state.tokenRates : []),
       priceBasis: state.priceBasis,
       priceEstimated: state.priceEstimated || 0,
       catalogBase: state.catalogBase || 0,
