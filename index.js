@@ -261,7 +261,7 @@ export function apply(ctx, rawConfig = {}) {
 
   async function refresh(force) {
     const work = refreshGateway(state, gateway, opts, log, force)
-    if (qoderGateway) await refreshQoder(state, { qoder: qoderGateway }, opts, log)
+    if (qoderGateway) await refreshQoder(state, { qoder: qoderGateway }, opts, log, force)
     work
       .then(() => {
         if (state.daily && state.daily.dirty) scheduleDailySave()
@@ -311,7 +311,9 @@ export function apply(ctx, rawConfig = {}) {
     await refresh(true)
     await refreshQoderActivity(state, qoderGateway, log, true)
     if (routing) await routing.status(true)
-    await checkin.maybeAuto(8000)
+    // 手动刷新要绕过节流：否则刚签到/刚重登的账号在 10 分钟重试窗口内
+    // 仍显示上一次的 failed/401，用户会以为刷新按钮没生效。
+    await checkin.maybeAuto(8000, true)
     sendJson(res, 200, { ok: true, online: state.online, error: state.error })
   }
 
@@ -851,7 +853,7 @@ function parseGatewayTime(value) {
  * 把 Qoder 网关的积分摘要并入快照。账号每行转成与 WorkBuddy 账号同形的状态行，
  * realm 固定 'qoder'，前端按 realm 分组渲染。
  */
-async function refreshQoder(state, gateway, opts, log) {
+async function refreshQoder(state, gateway, opts, log, force = false) {
   const qoder = gateway.qoder
   if (!state.qoder) {
     // 首轮没有任何快照时也要有承载 fetching 标记的对象
@@ -863,7 +865,7 @@ async function refreshQoder(state, gateway, opts, log) {
   }
   const now = Date.now()
   const cached = state.qoder
-  if (cached && cached.enabled && now - cached.updatedAt < 60_000) return
+  if (!force && cached && cached.enabled && now - cached.updatedAt < 60_000) return
   if (cached && cached.fetching) return cached.fetching
   // Qoder 目录用于识别免费模型（price_factor=0）与给 paid 模型估价，30 分钟一拉；
   // 实测用量台账 5 分钟一拉，是 Qoder 模型单价的最可靠来源。
@@ -2266,7 +2268,7 @@ function createCheckin(opts, gateway, state, log) {
     }
   }
 
-  function pendingUids() {
+  function pendingUids(force = false) {
     if (!opts.autoCheckin) return []
     if (new Date().getHours() < opts.checkinAfterHour) return []
     const day = dateKey()
@@ -2275,14 +2277,14 @@ function createCheckin(opts, gateway, state, log) {
       const record = state.checkin.get(account.uid)
       if (record && record.date === day && record.state === 'checked') continue
       const last = state.probeAt.get(account.uid) || 0
-      if (Date.now() - last < opts.checkinRetryMinutes * 60_000) continue
+      if (!force && Date.now() - last < opts.checkinRetryMinutes * 60_000) continue
       out.push(account.uid)
     }
     return out
   }
 
-  async function maybeAuto(timeoutMs) {
-    const uids = pendingUids()
+  async function maybeAuto(timeoutMs, force = false) {
+    const uids = pendingUids(force)
     if (uids.length === 0) return
     const work = (async () => {
       for (const uid of uids) await probe(uid)

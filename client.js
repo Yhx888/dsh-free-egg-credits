@@ -278,13 +278,16 @@ window.__ModuleLoader__.load({
         }
       }
 
-      function load() {
+      function load(force = false) {
         const sessionId = current.sessionId
         if (inflight) {
           // 同一会话复用进行中的请求；切换会话时等旧请求结束再拉新会话，
           // 不能把旧会话的响应写进新会话（否则切换后最多显示 30 秒旧积分）。
-          if (inflightSessionId === sessionId) return inflight
-          return inflight.finally(() => load())
+          if (inflightSessionId === sessionId) {
+            // 手动刷新不能复用刷新动作之前发出的旧快照，否则按钮看起来没生效。
+            return force ? inflight.finally(() => load(true)) : inflight
+          }
+          return inflight.finally(() => load(force))
         }
         const seq = ++requestSeq
         const query = sessionId ? '?sessionId=' + encodeURIComponent(sessionId) : ''
@@ -359,7 +362,7 @@ window.__ModuleLoader__.load({
         setSession,
         load,
         loadSoon,
-        refresh: () => load(),
+        refresh: () => load(true),
         getState: () => current,
       }
     }
