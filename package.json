@@ -1,6 +1,6 @@
 {
   "name": "dsh-free-egg-credits",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "type": "module",
   "description": "Free Egg 积分：在 DSH 侧边栏查看 WorkBuddy / Qoder 账号积分、今日额度、签到状态与每轮消耗，并支持一键切换优先消耗平台。",
   "license": "MIT",
@@ -19,7 +19,7 @@
   },
   "scripts": {
     "check": "node --check index.js && node --check client.js",
-    "test": "node test/session-credits.test.mjs"
+    "test": "node test/session-credits.test.mjs && node test/refresh.test.mjs && node test/qoder-checkin.test.mjs"
   },
   "keywords": [
     "dsh",

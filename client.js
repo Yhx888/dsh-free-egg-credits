@@ -406,6 +406,9 @@ window.__ModuleLoader__.load({
     }
 
     function formatBalance(value) {
+      // null/undefined = 网关没给（Qoder 退化账本会回 null）：未知就显示「—」，
+      // Number(null) 是 0，直接算会把「查不到余额」说成「一分没有」。
+      if (value === null || value === undefined || value === '') return '—'
       const number = Number(value)
       if (!Number.isFinite(number)) return '—'
       return number.toLocaleString('zh-CN', { maximumFractionDigits: 0 })
@@ -694,9 +697,12 @@ window.__ModuleLoader__.load({
       if (!record) return { state: 'idle', text: translateWith(t, 'checkin.unknown', '今日签到状态未知'), record: null }
       if (record.state === 'checked') {
         const fresh = record.fresh === true
+        // Qoder 任务口径会带出「今日已领取 +N Credits」：绿点后直接写清楚领到了多少，
+        // 光显示「已签到」看不出有没有真的到账。
+        const label = typeof record.label === 'string' ? shorten(record.label, 80) : ''
         return {
           state: 'checked',
-          text: translateWith(t, fresh ? 'checkin.fresh' : 'checkin.checked', fresh ? '今日已签到（本次补签）' : '今日已签到'),
+          text: label || translateWith(t, fresh ? 'checkin.fresh' : 'checkin.checked', fresh ? '今日已签到（本次补签）' : '今日已签到'),
           record,
         }
       }
@@ -1066,7 +1072,7 @@ window.__ModuleLoader__.load({
             source === 'qoder'
               ? [
                   account.nickname || 'Qoder',
-                  account.credits + ' 积分',
+                  formatBalance(account.credits) + ' 积分',
                   account.creditsTotal > 0
                     ? translateWith(props.t, 'qoder.used', '已用 {used} / {total}', {
                         used: formatBalance(account.used),

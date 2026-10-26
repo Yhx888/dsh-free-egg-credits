@@ -222,7 +222,7 @@ DeepSeek 请求由本机 new-api（默认 `http://127.0.0.1:3001`）在 WorkBudd
 | WorkBuddy 账号积分 | 网关面板 `GET /panel/api/overview`（`realm=cn` 的账号） |
 | WorkBuddy 签到状态 | 当天首次打开界面时调用一次单号签到接口（`POST /panel/api/accounts/{uid}/checkin`）。上游对重复签到返回 `10001 今天已签到`，幂等无副作用；未签到时顺带完成当天签到 |
 | Qoder 账号积分 | Qoder 网关 `GET /credits/summary`（registered 口径：`credits_remain` / `credits_size`） |
-| Qoder 签到状态 | Qoder 面板 `GET /accounts` 每个账号的 `lastCheckin`（今天已签到 / 尚未签到 / 今日奖励待领取，含签到时刻）；面板不可用或该账号行缺失时回落 `GET /scheduler` 的 `last_run_time`。签到本身由网关调度器后台完成 |
+| Qoder 签到状态 | Qoder 网关 `GET /tasks?uid=<uid>` 里 `daily_checkin` 行的 `status`（`claimed`=今天已领取，连领取说明一起显示；`completed`=可领取；`not_accepted`=上游当天没给这个账号下发活动）。每账号缓存 10 分钟，调度器 `last_run_time` 变化（09:00 / 10:15 / 10:45 / 21:00 各一轮）即作废；手动刷新与冷启动会等这一轮。任务视图不可用时回落面板 `GET /accounts?realm=all` 的 `lastCheckin`，再回落 `GET /scheduler` 的 `last_run_time`。签到本身由网关调度器后台完成 |
 | 平台优先消耗 | new-api 管理接口 `GET /api/channel/{id}`（读 priority）与 `PUT /api/channel/`（写 priority）：WorkBuddy 渠道 13 / Qoder 渠道 12；切换后回读校验 |
 | 会话消耗账号 | WorkBuddy 面板 `token_usage.last_used_at` / `last_model`；Qoder 面板 `GET /usage/recent`（`account` / `model` / `at`，3 秒缓存）。每轮回复结束后 Host 侧延迟 1.5 秒刷新两侧网关，按事件时刻就近匹配到该会话；首次匹配后固定，不再换号 |
 | 账号当日消耗 | WorkBuddy：累加两次快照之间的余额下降量（网关按上游 `credit` 扣减账号余额），账本落盘 `<DSH_HOME>/free-egg-credits/daily.json`，重启 DSH 继续算；Qoder：当天 `/usage/recent` 台账中 `billable !== false` 的 `credit` 逐条累加（免费模型行 `billable=false` 不计；缺该字段的旧网关按计费处理） |
@@ -261,14 +261,16 @@ DeepSeek 请求由本机 new-api（默认 `http://127.0.0.1:3001`）在 WorkBudd
   `09:00` / `10:15` / `10:45` / `21:00` 自动巡检签到并领取活动积分（`next_run_time` 可在快照里看到；
   10:15 与 10:45 是针对「当天活动 10:00 刷新后上游下发延迟」的两次重试窗口）。
 - 插件的 `autoCheckin` 只做**打开界面时的幂等补签与状态核对**：WorkBuddy 对未签到的账号调用一次
-  单号签到接口（上游对「今天已签到」返回 `10001`，无副作用）；Qoder 侧不自动触发签到，只读面板
-  `lastCheckin` 展示状态，需要补签时点设置页「立即签到」。
-- Qoder 的「签到」= 领取每日活动（每日 `10:00`（UTC+8）开新一轮）。如果 `lastCheckin` 早于当天
-  10:00、而当前已过 10:00，插件显示**黄点「今日奖励待领取」**而不是绿点——09:00 的调度器可能只是
-  给「昨天那批已领」盖了章，当天 100 Credits 要到 21:00 那轮（或手动「立即签到」）才真正到账。
+  单号签到接口（上游对「今天已签到」返回 `10001`，无副作用）；Qoder 侧不自动触发签到，只读网关
+  `/tasks` 的任务视图展示状态，需要补签时点设置页「立即签到」。
+- Qoder 的「签到」= 领取每日活动（每日 `10:00`（UTC+8）开新一轮）。插件以网关 `/tasks` 的
+  `daily_checkin` 为准：只有 `claimed` 才显示绿点并带上领取说明（如「今日已领取 +100 Credits」）；
+  `not_accepted` 说明上游当天没给这个账号下发活动（定向活动、同人去重等），显示黄点而不是「已签到」。
+  回落口径下如果 `lastCheckin` 早于当天 10:00、而当前已过 10:00，显示**黄点「今日奖励待领取」**——
+  09:00 的调度器可能只是给「昨天那批已领」盖了章，当天积分要到 21:00 那轮（或手动「立即签到」）才到账。
 - 不想让插件补签时把 `autoCheckin` 设为 `false`，此时 WorkBuddy 状态可能显示未知，可在设置页手动签到。
 - 注意「已签到」≠「当天积分已到账」：积分余额以网关写回为准；Qoder 的每日活动按 `10:00`（UTC+8）
-  刷新和领取，调度器在那之前跑过时可能先盖上「已签到」，当天的 100 积分要等下一轮领取。
+  刷新和领取，只有任务视图说 `claimed`（领取说明里带金额）才是真的领到了。
 
 ## 隐私与安全
 
@@ -291,14 +293,16 @@ DeepSeek 请求由本机 new-api（默认 `http://127.0.0.1:3001`）在 WorkBudd
 - 未实测模型的单价是**倍率折算的估算值**：两台网关各自用本机实测数据校准，换模型 / 上游调价后可能有偏差；配置 `creditsPer1k` 可精确覆盖。
 - Qoder 实测单价包含缓存命中的折扣（本项目实测一度有 98% 输入命中缓存），是「该模型近期实际平均」；同一模型换用法（缓存比例变化）会带来偏差。
 - free-egg 聚合别名的自动匹配按「去版本号归一」进行，跨网关同名家族（如 DeepSeek-Flash / deepseek-v4.1-flash）能对上；若有歧义，用 `creditsPer1k` 显式指定。
-- 签到状态以网关为准：WorkBuddy 来自一次幂等签到调用的返回，Qoder 来自面板 `lastCheckin`；
-  「已签到」不代表当天奖励积分一定已到账（见上文「已签到 ≠ 当天积分已到账」）。关闭 `autoCheckin` 后
-  WorkBuddy 状态可能为「未知」。
+- 签到状态以网关为准：WorkBuddy 来自一次幂等签到调用的返回，Qoder 来自网关 `/tasks` 的
+  `daily_checkin`（回落面板 `lastCheckin`）；「已签到」不代表当天奖励积分一定已到账
+  （见上文「已签到 ≠ 当天积分已到账」）。关闭 `autoCheckin` 后 WorkBuddy 状态可能为「未知」。
 - Qoder 积分为上游 registered 口径（`credits_remain` / `credits_size`），签到或消费后由网关写回；
+  退化账本（`isQuotaExceeded` 且 size/remain 为 null）显示「—」而不是 0——余额未知和「一分没有」是两回事。
   快照缓存 60 秒，设置页点刷新可强制重拉。
 - 每日积分预算的**强制**在网关侧：插件只读展示，不参与选号或拦截。旧网关没有预算字段、或
   Qoder 面板 `/accounts` 不可用时，界面回到 1.3.0 的「今日消耗」样式（Qoder 沿用上次成功值）；
-  Qoder 面板 `/accounts` 默认只返回当前域的账号，跨域账号可能拿不到预算数据。
+  Qoder 面板 `/accounts` 默认只返回当前域的账号，插件已显式带 `?realm=all`；网关不支持该参数时
+  跨域账号仍可能拿不到预算数据。
 - 「积分优先消耗」的切换改的是 new-api 渠道优先级，需要管理员 access token；token 轮换/失效后
   切换会失败并在设置页提示（更新 `accessTokenFile` 即可，Host 会按文件 mtime 重读）。如果 new-api
   里两个渠道 id 不是默认的 13/12，需要按实际配置 `channels`。渠道优先级被别的进程改过时，

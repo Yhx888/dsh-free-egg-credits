@@ -3,6 +3,39 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.5.3] - 2026-10-26
+
+### 修复
+
+- **Qoder 余额未知被显示成 0 分**：上游退化账本会回 `credits_remain = null`
+  （`isQuotaExceeded` 且 size/remain 全 0），旧实现 `Number(null) === 0`，侧边栏和设置页把
+  「查不到余额」画成「一分没有」。现在 `credits` / `creditsTotal` / `used` 用
+  `optionalNumber` 保留未知态，前端 `formatBalance` 对 `null` / `undefined` 显示「—」。
+- **Qoder 签到状态假绿 / 假黄**：旧实现只看面板 `lastCheckin`（本地盖章）——09:00 巡检给
+  「昨天那批已领」也盖今天，跨区账号又因为 `/accounts` 默认只回当前域而拿不到行，回落成
+  「调度器今天跑过 = 已签到」。现在以网关 `GET /tasks?uid=<uid>` 的 `daily_checkin` 为准：
+  `claimed` 绿点并显示领取说明（如「今日已领取 +100 Credits」），`completed` 黄点可领取，
+  `not_accepted` 黄点「今日无可领取的官方活动（上游未下发）」。每账号 10 分钟缓存，
+  调度器 `last_run_time` 变化即作废；手动刷新与冷启动会等这一轮，平时后台补。
+- **Qoder 跨区账号拿不到账号行**：`/accounts` 改为显式带 `?realm=all`，intl + cn 同机时
+  两个域的 `lastCheckin` / 预算字段都能读到（网关不支持该参数时行为不变）。
+- **手动刷新被签到重试节流挡住**：账号签到失败（如 401）后点「刷新」，`pendingUids()` 仍按
+  `checkinRetryMinutes` 跳过，界面停在旧的 `failed`。现在 `/refresh` 走 force 通道，
+  强制重新探测签到；Qoder 快照同步按 force 绕开 60 秒缓存。
+
+### 变更
+
+- 新增 `test/refresh.test.mjs` 与 `test/qoder-checkin.test.mjs`：覆盖手动刷新绕过节流、
+  余额未知态、`/tasks` 口径优先、`realm=all`、任务视图缓存五条回归。
+- README / README.en 同步更新 Qoder 签到数据源（`/tasks` 优先，回落 `lastCheckin` / 调度器）
+  与「已签到 ≠ 当天积分已到账」的判定口径。
+
+### 说明
+
+- 本次 Host / Client 都有改动：Host 需重启 DSH 生效，Client 刷新页面即可。
+- Qoder 任务视图每账号一次上游请求（网关侧还会串若干上游调用），因此只在手动刷新、冷启动和
+  调度器换轮时等待，日常快照沿用上一次结果。
+
 ## [1.5.2] - 2026-10-22
 
 ### 修复

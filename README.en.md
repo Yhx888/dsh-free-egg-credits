@@ -256,7 +256,7 @@ permissions) or inline in `accessToken`; **never commit it**.
 | WorkBuddy credits | Gateway panel `GET /panel/api/overview` (accounts with `realm=cn`) |
 | WorkBuddy check-in | Once per day, on first UI open, a single-account check-in call (`POST /panel/api/accounts/{uid}/checkin`). Upstream returns `10001 already checked in` for repeats — idempotent, no side effects; if not checked in yet, it completes today's check-in |
 | Qoder credits | Qoder gateway `GET /credits/summary` (registered view: `credits_remain` / `credits_size`) |
-| Qoder check-in | Qoder panel `GET /accounts` per-account `lastCheckin` (checked in today / not yet / today's reward pending, with the time); falls back to `GET /scheduler` `last_run_time` when the panel read fails or the account row is missing. Check-in itself is performed by the gateway scheduler in the background |
+| Qoder check-in | The `daily_checkin` row of `GET /tasks?uid=<uid>` on the Qoder gateway (`claimed` = claimed today and its description is shown; `completed` = claimable; `not_accepted` = the upstream issued no campaign for that account today). Cached per account for 10 minutes and invalidated whenever the scheduler's `last_run_time` changes (one pass at 09:00 / 10:15 / 10:45 / 21:00); a manual refresh or a cold start waits for this pass. Falls back to the panel `GET /accounts?realm=all` `lastCheckin`, then to `GET /scheduler` `last_run_time`. Check-in itself is performed by the gateway scheduler in the background |
 | Platform credit priority | new-api admin API `GET /api/channel/{id}` (read `priority`) and `PUT /api/channel/` (write `priority`): WorkBuddy channel 13 / Qoder channel 12; verified by reading back after each switch |
 | Session serving account | WorkBuddy panel `token_usage.last_used_at` / `last_model`; Qoder panel `GET /usage/recent` (`account` / `model` / `at`, cached for 3 s). After each reply the host waits 1.5 s, refreshes both gateways and matches the latest request to that session by timestamp; the first match is pinned and never switches |
 | Today's usage per account | WorkBuddy: sum of balance decreases between snapshots (the gateway deducts the upstream `credit` from account balance); the ledger is persisted to `<DSH_HOME>/free-egg-credits/daily.json` and continues across DSH restarts. Qoder: sum of `credit` over today's `/usage/recent` rows where `billable !== false` (`billable=false` free rows are excluded; older gateways without the field count as billed) |
@@ -303,16 +303,19 @@ Check-in is two-layered — background scheduler plus plugin fallback:
 - The plugin's `autoCheckin` only performs an **idempotent backfill / state probe when the UI is
   opened**: WorkBuddy accounts not known to be checked in get one single-account check-in call
   (upstream answers `10001` for "already checked in today", no side effects); Qoder is never
-  auto-triggered — its panel `lastCheckin` is displayed and the settings page has a manual button.
-- For Qoder, "check-in" means claiming the daily campaign (a new round opens at `10:00` UTC+8). If
-  `lastCheckin` is before 10:00 today while the clock is already past 10:00, the dot turns **yellow
-  ("today's reward pending")** instead of green — the 09:00 scheduler pass may only have stamped
-  yesterday's batch, and today's 100 credits arrive at 21:00 (or via the manual button).
+  auto-triggered — its gateway `/tasks` view is displayed and the settings page has a manual button.
+- For Qoder, "check-in" means claiming the daily campaign (a new round opens at `10:00` UTC+8).
+  The plugin trusts `daily_checkin` from the gateway `/tasks`: only `claimed` turns the dot green,
+  together with the gateway description (e.g. "claimed +100 credits today"); `not_accepted` means the
+  upstream issued no campaign for that account (targeted campaigns, dedup), shown as a yellow dot
+  rather than "checked in". On the fallback path, a `lastCheckin` before 10:00 today while the clock
+  is already past 10:00 shows **yellow ("today's reward pending")** — the 09:00 scheduler pass may
+  only have stamped yesterday's batch.
 - Set `autoCheckin: false` to disable the plugin probe; WorkBuddy state may then show as unknown and
   you can check in manually from the settings page.
 - "Checked in" ≠ "today's credits already credited": balances are whatever the gateway wrote back.
-  Qoder's daily campaign refreshes at `10:00` (UTC+8); if the scheduler ran earlier it may stamp the
-  account as checked in while today's 100 credits are still to be claimed.
+  Qoder's daily campaign refreshes at `10:00` (UTC+8); only `claimed` in the task view (with the
+  amount in its description) means the credits really landed.
 
 ## Privacy and security
 
@@ -345,12 +348,13 @@ Please report security issues privately as described in [SECURITY.md](SECURITY.m
 - free-egg aggregation aliases are matched by stripping version numbers (DeepSeek-Flash /
   deepseek-v4.1-flash); if a match is ambiguous, set `creditsPer1k` explicitly.
 - Check-in state comes from the gateways: WorkBuddy from one idempotent check-in call, Qoder from the
-  panel `lastCheckin`. "Checked in" does not guarantee that today's reward credits have landed yet
-  (see "Checked in ≠ today's credits already credited"); with `autoCheckin: false` WorkBuddy state
-  can be "unknown".
+  gateway `/tasks` `daily_checkin` row (falling back to the panel `lastCheckin`). "Checked in" does
+  not guarantee that today's reward credits have landed yet (see "Checked in ≠ today's credits
+  already credited"); with `autoCheckin: false` WorkBuddy state can be "unknown".
 - Qoder credits use the upstream registered view (`credits_remain` / `credits_size`) and are
-  written back by the gateway after check-in or usage. Snapshots are cached for 60 seconds; the
-  settings page refresh forces a new pull.
+  written back by the gateway after check-in or usage. A degraded ledger (`isQuotaExceeded` with
+  null size/remain) renders as "—", never as 0 — unknown balance is not the same as an empty one.
+  Snapshots are cached for 60 seconds; the settings page refresh forces a new pull.
 - The credit-priority switch needs a new-api admin access token. When the token expires/rotates the
   switch fails and the settings page shows the error (update `accessTokenFile`; the host re-reads it
   on mtime change). If your new-api channels are not the default 13/12, set `channels` accordingly.
@@ -363,7 +367,8 @@ Please report security issues privately as described in [SECURITY.md](SECURITY.m
   throttles or switches accounts. Without the fields (old gateways) or when the Qoder panel
   `/accounts` read fails, the UI falls back to the 1.3.0 "today's usage" rendering (Qoder keeps the
   last successfully fetched budget values); the Qoder panel `/accounts` view only covers the
-  current realm, so accounts in other realms may lack budget data.
+  current realm by default and the plugin now passes `?realm=all`, so accounts in other realms may
+  still lack budget data when the gateway ignores that parameter.
 - Built against the current DSH `slots` / `webServer` / `session/event` mechanisms; major DSH
   changes may require follow-up work.
 

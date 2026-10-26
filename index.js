@@ -355,7 +355,7 @@ export function apply(ctx, rawConfig = {}) {
     }
     state.qoder = state.qoder && state.qoder.enabled ? state.qoder : { enabled: true }
     state.qoder.updatedAt = 0 // 强制下次 snapshot 重拉积分
-    await refreshQoder(state, { qoder: qoderGateway }, opts, log)
+    await refreshQoder(state, { qoder: qoderGateway }, opts, log, true)
     const rows = Array.isArray(result?.results) ? result.results : []
     sendJson(res, 200, {
       ok: true,
@@ -760,7 +760,11 @@ function createQoderGateway(opts, log) {
       request(`/usage/recent?limit=${encodeURIComponent(limit)}&page=${encodeURIComponent(page)}`, { timeoutMs: 4000 }),
     // 手动签到（设置页按钮用）；调度器每日 09/21 自动跑，这里只是手动补
     checkin: async () => request('/accounts/checkin', { method: 'POST', timeoutMs: 300000 }),
-    accounts: () => request('/accounts'),
+    // 跨区账号（intl + cn 同机）也要拿到 lastCheckin / 预算行：网关默认只回当前域，
+    // 这里显式要 all；不认识该参数的旧网关会忽略，行为与之前一致。
+    accounts: () => request('/accounts?realm=all', { timeoutMs: 12000 }),
+    // 单账号任务视图：网关按上游状态算好的「今日签到/领取」真实口径（最慢的一环）。
+    tasks: uid => request(`/tasks?uid=${encodeURIComponent(uid)}`, { timeoutMs: 20000 }),
     // 调度器状态：拿最近/下次签到时间，界面与 WorkBuddy 的签到口径对齐
     scheduler: () => request('/scheduler'),
   }
@@ -833,6 +837,100 @@ function qoderAccountCheckin(panelRow, scheduler) {
     message: '今日已签到（网关自动）',
     fresh: false,
     nextAt,
+  }
+}
+
+/**
+ * 任务视图里的「每日签到」行 → 快照签到记录。
+ * 这是网关按上游真实状态算出来的口径：claimed=今天已领、completed=可领、
+ * not_accepted=上游根本没下发活动。面板 lastCheckin 只是本地盖章——09:00 巡检
+ * 发现「昨天那批已领」也会盖成今天，没活动的账号又永远盖不上，分不清「领到了」
+ * 和「查不到」。行缺失或状态不认识时返回 null，调用侧回落旧口径。
+ */
+function qoderTaskCheckin(entry, scheduler) {
+  const view = entry && entry.stamp === dateKey() ? entry.view : null
+  if (!view || typeof view !== 'object') return null
+  const status = String(view.status || '')
+  const description = typeof view.description === 'string' ? view.description.trim() : ''
+  const nextAt = scheduler && typeof scheduler.next_run_time === 'string' ? scheduler.next_run_time : ''
+  if (status === 'claimed') {
+    return {
+      date: dateKey(),
+      at: '',
+      state: 'checked',
+      message: '今日已签到（网关自动）',
+      // 绿点后直接写清楚领到多少：只显示「已签到」看不出有没有真的到账。
+      label: description || '今日已签到（网关自动）',
+      fresh: false,
+      nextAt,
+    }
+  }
+  if (status === 'completed') {
+    return {
+      date: dateKey(),
+      at: '',
+      state: 'pending',
+      message: '今日奖励可领取（点「立即签到」）',
+      fresh: false,
+      nextAt,
+    }
+  }
+  if (status === 'not_accepted') {
+    return {
+      date: dateKey(),
+      at: '',
+      state: 'pending',
+      message: '今日无可领取的官方活动（上游未下发）',
+      fresh: false,
+      nextAt,
+    }
+  }
+  return null
+}
+
+/** 任务视图缓存时长：每号一次 /tasks（网关侧还要串 5 个上游请求），别按快照频率打。 */
+const QODER_TASK_TTL_MS = 10 * 60_000
+
+/**
+ * 刷新每账号任务视图。快照主路径只在手动刷新/冷启动时 await 它，
+ * 其余时候后台补——/tasks 是上游最慢的一环，不能让侧边栏每次轮询都等它。
+ */
+async function refreshQoderTasks(state, qoder, accounts, scheduler, log, force = false) {
+  const cache = state.qoderTasks
+  if (!cache || !qoder || !Array.isArray(accounts) || accounts.length === 0) return
+  if (cache.fetching) {
+    if (!force) return cache.fetching
+    await cache.fetching.catch(() => {})
+  }
+  const lastRun = scheduler && typeof scheduler.last_run_time === 'string' ? scheduler.last_run_time : ''
+  // 调度器跑过新一轮（09:00/10:15/10:45/21:00）立即作废：刚领到的结果要马上可见。
+  const cycleChanged = Boolean(lastRun) && lastRun !== cache.lastRun
+  const now = Date.now()
+  const due = accounts.filter(account =>
+    force || cycleChanged || now - (cache.at.get(account.uid) || 0) > QODER_TASK_TTL_MS)
+  if (due.length === 0) return
+  cache.lastRun = lastRun
+  const work = (async () => {
+    await Promise.all(due.map(async account => {
+      try {
+        const payload = await qoder.tasks(account.uid)
+        const rows = Array.isArray(payload && payload.tasks) ? payload.tasks : []
+        const view = rows.find(row => row && row.task_code === 'daily_checkin') || null
+        if (view) cache.view.set(account.uid, { view, stamp: dateKey() })
+        else cache.view.delete(account.uid)
+      } catch (error) {
+        // 失败也记时间：10 分钟内不再打上游，界面继续用上一次的真值。
+        log('读取 Qoder 任务视图失败', error)
+      } finally {
+        cache.at.set(account.uid, Date.now())
+      }
+    }))
+  })()
+  cache.fetching = work
+  try {
+    await work
+  } finally {
+    if (cache.fetching === work) cache.fetching = null
   }
 }
 
@@ -927,10 +1025,12 @@ async function refreshQoder(state, gateway, opts, log, force = false) {
           uid,
           nickname: String(row.nickname || ''),
           realm: 'qoder',
-          // 上游 registered 口径：remain = 剩余，size = 总额度
-          credits: toNumber(row.credits_remain),
-          creditsTotal: toNumber(row.credits_size),
-          used: toNumber(row.credits_used),
+          // 上游 registered 口径：remain = 剩余，size = 总额度。退化账本会回 null
+          // （isQuotaExceeded + size/remain 全 0）：未知不能当 0，否则侧边栏把
+          // 「查不到余额」显示成「一分没有」。
+          credits: optionalNumber(row.credits_remain),
+          creditsTotal: optionalNumber(row.credits_size),
+          used: optionalNumber(row.credits_used),
           cooling: false,
           disabled: false,
           disabledReason: '',
@@ -939,7 +1039,7 @@ async function refreshQoder(state, gateway, opts, log, force = false) {
           degradeUntil: '',
           consecutiveFails: 0,
           modelCosts: [],
-          // 签到状态按账号：面板 lastCheckin 优先，缺失时回落调度器口径
+          // 签到状态先按面板 lastCheckin；任务视图拿到后会在下面覆盖成真实口径
           checkin: qoderAccountCheckin(panelRow, scheduler),
           // 每日预算统一字段：本次 /accounts 无该行（或接口失败）时保持上一次的值，
           // 从未拿到过则 undefined/0，展示侧回落旧的「今日消耗」口径。
@@ -948,6 +1048,17 @@ async function refreshQoder(state, gateway, opts, log, force = false) {
           capped: panelRow ? panelRow.creditLimitReached === true : previous ? previous.capped === true : false,
         }
       })
+      // 任务视图是最慢的上游接口：手动刷新/冷启动等一轮（首帧就准），其余快照只补后台。
+      if (force || state.qoderTasks.view.size === 0) {
+        await refreshQoderTasks(state, qoder, accounts, scheduler, log, true)
+      } else {
+        refreshQoderTasks(state, qoder, accounts, scheduler, log, false).catch(() => {})
+      }
+      // 任务口径优先：claimed 说明今天真的领到了，not_accepted 说明上游根本没下发活动。
+      for (const account of accounts) {
+        const task = qoderTaskCheckin(state.qoderTasks.view.get(account.uid), scheduler)
+        if (task) account.checkin = task
+      }
       state.qoder = {
         enabled: true,
         online: true,
@@ -1394,6 +1505,9 @@ function createState(persistedDaily) {
     lastSessionId: '',
     recentCache: null,
     qoder: null,
+    // Qoder 每账号任务视图（/tasks?uid=）：view=最近一次结果，at=每号上次拉取时间，
+    // lastRun=调度器上一轮时间（换轮即作废），fetching=同一时刻只允许一轮在飞。
+    qoderTasks: { view: new Map(), at: new Map(), lastRun: '', fetching: null },
     // new-api 平台优先消耗模块（createRouting 的返回值，快照读 view()）；null = 未配置
     routing: null,
     // 会话 → 承载账号：bySession 一旦固定就不再换（前台会话切换只切展示的会话）；
