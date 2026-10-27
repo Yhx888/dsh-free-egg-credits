@@ -21,7 +21,24 @@
 
 > **不用再开三个面板**：在 DSH 侧边栏一眼看清 WorkBuddy / Qoder 还剩多少积分、今天还能不能用、这轮烧了多少；配置了 new-api 时还能一键切换优先消耗平台。
 
-### 一键安装
+### 从零开始：一条命令装好网关 + New API
+
+本机还没有 WorkBuddy2API / qoder2api-hub / New API？先把仓库拉下来，跑一次部署脚本：
+
+```powershell
+git clone https://github.com/Yhx888/dsh-free-egg-credits.git
+cd dsh-free-egg-credits
+powershell -ExecutionPolicy Bypass -File .\install\windows.ps1
+```
+
+脚本会下载并校验三个组件、写入配置、隐藏启动，并在安装目录生成：
+
+- `使用指引.md`：WorkBuddy / Qoder / New API 三个面板的登录步骤、渠道配置、DSH 接入；
+- `dsh-snippets.yml`：插件配置与 DSH provider 片段，复制进 profile 的 `cordis.patch.yml` 即可。
+
+默认装到 `%LOCALAPPDATA%\FreeEggStack`，三个服务只监听 `127.0.0.1`（7863 / 8790 / 3001）。想先看计划加 `-DryRun`；只装其中一个加 `-SkipQoder` / `-SkipNewApi`；完整参数见 [install/README.md](install/README.md)。
+
+### 只装插件（本机已有网关）
 
 ```bash
 dsh plugin --profile web add github:Yhx888/dsh-free-egg-credits
@@ -31,7 +48,7 @@ dsh plugin --profile web add github:Yhx888/dsh-free-egg-credits
 - **Web / CLI**：执行上面的命令；装好后按 [配置](#配置) 填入网关地址与密钥文件路径，再重启 DSH。
 - **已经装了 WorkBuddy2API / qoder2api-hub**：通常只需要 `gatewayBaseUrl` + `gatewayConfigPath`（WorkBuddy）和 `qoder.baseUrl` + `qoder.panelPasswordFile`（Qoder）；`newApi` 可选。
 
-> **适合谁**：本机已经跑 WorkBuddy2API / qoder2api-hub（可选 new-api）的用户。插件只读这些网关的本地接口，不提供账号、积分或网关；没有网关时不会显示数据。
+> **适合谁**：本机已经跑 WorkBuddy2API / qoder2api-hub（可选 new-api）的用户；如果还没有，用上面的全家桶脚本一次装齐。插件只读这些网关的本地接口，不提供账号、积分或网关；没有网关时不会显示数据。
 
 ### 它解决什么
 
@@ -66,7 +83,11 @@ WorkBuddy 与 Qoder 账号共用同一套行 / 卡片结构，只以来源徽标
 
 插件本身零运行时依赖，只要一个能跑 DSH Web GUI 的环境。
 
-### 方式一：从 GitHub 安装
+### 方式一：从零开始（网关 + New API + 插件，推荐）
+
+见 [快速开始](#从零开始一条命令装好网关--new-api) 与 [install/README.md](install/README.md)。装完后再按下面的方式装插件。
+
+### 方式二：从 GitHub 安装
 
 ```bash
 dsh plugin --profile web add github:Yhx888/dsh-free-egg-credits
@@ -77,7 +98,7 @@ dsh plugin --profile web add github:Yhx888/dsh-free-egg-credits
 > 官方桌面端托管的 `desktop` profile 会被 CLI 拒绝（`managed exclusively by the Electron application`），
 > 这类环境请用下面的手动 link 方式。
 
-### 方式二：手动 link（桌面端 / 本地开发）
+### 方式三：手动 link（桌面端 / 本地开发）
 
 插件通过 `link:` 依赖装进 DSH profile，不进 `node_modules` 拷贝，改完源码重启 DSH 即生效：
 
@@ -106,8 +127,8 @@ New-Item -ItemType Junction `
 | [Qoder 反代网关](https://github.com/shuishuipingan/qoder2api-hub)（`qoder2api-hub`） | Qoder 账号积分与签到调度 | `qoder.baseUrl`、`qoder.panelPasswordFile` |
 | [New API](https://github.com/QuantumNous/new-api)（`new-api`，`:3001`） | 「积分优先消耗」切换（改渠道优先级） | `newApi.*` |
 
-两个网关都**不是**本插件的组成部分；插件只读它们的 HTTP 接口。
-网关密钥与面板密码只在 Host 侧读取、不下发浏览器。
+两个网关和 New API 都**不是**本插件的组成部分；插件只读它们的 HTTP 接口。
+没有时可以用上文的 `install/windows.ps1` 一次装齐；网关密钥与面板密码只在 Host 侧读取、不下发浏览器。
 
 ## 配置
 

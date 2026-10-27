@@ -3,6 +3,38 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.6.0] - 2026-10-27
+
+### 新增
+
+- **一体化部署（Windows）**：新增 `install/windows.ps1`，一条命令装好整套后端：
+  - WorkBuddy2API（`:7863`）、Qoder2API-Hub（`:8790`）、New API（`:3001`）都从官方 release 下载，
+    带 SHA256 校验、断点续传与失败重试；
+  - 自动写入 `config.json`、生成随机 `api_key` / Qoder 面板密码，并隐藏启动三个服务；
+  - 生成 `start-stack.ps1` / `stop-stack.ps1` / `status.ps1`（幂等、只停本安装目录的进程）；
+  - 生成《使用指引》：WorkBuddy / Qoder / New API 三个面板的登录步骤、渠道配置、DSH 接入；
+  - 生成 `dsh-snippets.yml`，检测到已安装本插件时自动把插件配置追加到对应 profile 的
+    `cordis.patch.yml`（带时间戳备份）。
+- **Qoder 零依赖运行**：安装器下载 Python 3.12 embeddable 到 `qoder/python/`，不要求本机预装 Python；
+  `_pth` 用相对路径，整个安装目录可以整体搬移。
+- 支持 `-DryRun` / `-SkipWorkBuddy` / `-SkipQoder` / `-SkipNewApi` / `-NoStart` / `-AutoStart` 等参数，
+  重复运行幂等（账号、数据库、密钥不覆盖）。
+
+### 变更
+
+- README / README.en 快速开始拆成两条路径：**从零开始**（全家桶脚本）与**只装插件**（已有网关）；
+  外部依赖表补上「一键装齐」入口。
+- 新增 `install/README.md`：参数、目录结构、升级 / 卸载、杀软误报说明。
+
+### 说明
+
+- 安装器只下载并启动三个上游项目（WorkBuddy2API / Qoder2API-Hub 为 MIT，New API 为 AGPL-3.0），
+  不改它们的代码；三者与插件均只监听本机。
+- 部分国产杀软会把「下载 + 启动本地服务」的 PowerShell 脚本启发式报成
+  `HEUR:TrojanDownloader/PS.NetLoader`；这是误报（所有下载地址固定、全部 SHA256 校验），
+  处理方法见 `install/README.md`。
+- 本次为安装体验更新，插件运行时行为与 1.5.3 一致；1.5.2 / 1.5.3 的修复一并包含在本次发布中。
+
 ## [1.5.3] - 2026-10-26
 
 ### 修复

@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Free Egg 积分",
-    "description": "在 DSH 侧边栏查看 WorkBuddy / Qoder 账号积分、今日额度、签到状态与每轮消耗，支持一键切换积分优先消耗平台。"
+    "description": "在 DSH 侧边栏查看 WorkBuddy / Qoder 账号积分、今日额度、签到状态与每轮消耗，支持一键切换积分优先消耗平台，并附网关 + New API 一键部署脚本。"
   }
 }

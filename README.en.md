@@ -27,7 +27,24 @@ fall back to WorkBuddy when Qoder is congested).
 
 > **Stop juggling three dashboards**: see WorkBuddy / Qoder credits, today's budget, check-in state and per-turn spend in the DSH sidebar — and switch which platform is spent first with one click when new-api is configured.
 
-### One-click install
+### From zero: one command for the gateways + New API
+
+If WorkBuddy2API / qoder2api-hub / New API are not running yet, use the bundled setup script:
+
+```powershell
+git clone https://github.com/Yhx888/dsh-free-egg-credits.git
+cd dsh-free-egg-credits
+powershell -ExecutionPolicy Bypass -File .\install\windows.ps1
+```
+
+It downloads and SHA256-verifies the three upstream components, writes their configs, starts them hidden on `127.0.0.1` (ports 7863 / 8790 / 3001), and generates:
+
+- `使用指引.md` — step-by-step account login for the WorkBuddy / Qoder / New API panels, channel setup and DSH wiring;
+- `dsh-snippets.yml` — the plugin config and DSH provider snippet to merge into your profile's `cordis.patch.yml`.
+
+Default install root: `%LOCALAPPDATA%\FreeEggStack`. Add `-DryRun` to preview, `-SkipQoder` / `-SkipNewApi` to omit a component; full options in [install/README.md](install/README.md).
+
+### Install the plugin only (gateways already running)
 
 ```bash
 dsh plugin --profile web add github:Yhx888/dsh-free-egg-credits
@@ -37,7 +54,7 @@ dsh plugin --profile web add github:Yhx888/dsh-free-egg-credits
 - **Web / CLI**: run the command above, fill in the gateway addresses and secret-file paths from [Configuration](#configuration), then restart DSH.
 - **Already running WorkBuddy2API / qoder2api-hub?** Usually you only need `gatewayBaseUrl` + `gatewayConfigPath` (WorkBuddy) and `qoder.baseUrl` + `qoder.panelPasswordFile` (Qoder); `newApi` is optional.
 
-> **Who it's for**: users already running WorkBuddy2API / qoder2api-hub (optionally new-api) locally. The plugin only reads those local gateway APIs; it does not provide accounts, credits or gateways, and shows nothing without them.
+> **Who it's for**: users running WorkBuddy2API / qoder2api-hub (optionally new-api) locally — or anyone who wants the bundled script to install the whole stack. The plugin only reads those local gateway APIs; it does not provide accounts, credits or gateways, and shows nothing without them.
 
 ### What it solves
 
@@ -83,7 +100,11 @@ source badge.
 
 The plugin has no runtime dependencies; all you need is a working DSH web GUI.
 
-### Option 1: install from GitHub
+### Option 1: from zero (gateways + New API + plugin, recommended)
+
+See [Quick start](#from-zero-one-command-for-the-gateways--new-api) and [install/README.md](install/README.md). Install the plugin afterwards with one of the options below.
+
+### Option 2: install from GitHub
 
 ```bash
 dsh plugin --profile web add github:Yhx888/dsh-free-egg-credits
@@ -94,7 +115,7 @@ Then add the configuration from the [Configuration](#configuration) section and 
 > The `desktop` profile managed by the official desktop app rejects CLI installs
 > (`managed exclusively by the Electron application`); use the manual link below in that case.
 
-### Option 2: manual link (desktop app / local development)
+### Option 3: manual link (desktop app / local development)
 
 Install it as a `link:` dependency in the DSH profile — no copy into `node_modules`, and source
 changes take effect after restarting DSH:
@@ -125,7 +146,8 @@ refresh.
 | [Qoder gateway](https://github.com/shuishuipingan/qoder2api-hub) (`qoder2api-hub`) | Qoder account credits and check-in scheduler | `qoder.baseUrl`, `qoder.panelPasswordFile` |
 | [New API](https://github.com/QuantumNous/new-api) (`new-api`, `:3001`) | Credit priority switching (channel priorities) | `newApi.*` |
 
-Neither gateway is part of this repository; the plugin only reads their HTTP APIs. Gateway keys, the
+The gateways and New API are not part of this repository; the plugin only reads their HTTP APIs.
+If they are missing, the bundled `install/windows.ps1` can set all three up in one go. Gateway keys, the
 panel password and the new-api admin token are read on the host side and are never sent to the browser.
 
 ## Configuration

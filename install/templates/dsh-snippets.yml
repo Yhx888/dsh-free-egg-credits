@@ -1,0 +1,60 @@
+# ============================================================
+# Free Egg Credits · DSH 配置片段
+# 把下面两段分别合并到：
+#   C:\Users\<你>\.dsh\profiles\<profile>\cordis.patch.yml
+# 改完重启 DSH（Host 半改动必须重启；只改 Client 刷新页面即可）。
+# ============================================================
+
+# 1) 插件配置：确认已安装 dsh-free-egg-credits 后，把这段追加到文件末尾
+- id: free-egg-credits
+  config:
+    gatewayBaseUrl: 'http://127.0.0.1:{{WB_PORT}}'
+    gatewayConfigPath: '{{ROOT}}/workbuddy/config.json'
+    qoder:
+      baseUrl: 'http://127.0.0.1:{{QODER_PORT}}'
+      panelPasswordFile: '{{ROOT}}/qoder/.panel-password'
+    # 可选：New API 建好两个渠道、并生成管理员 access token 后取消注释
+    # newApi:
+    #   baseUrl: 'http://127.0.0.1:{{NEWAPI_PORT}}'
+    #   userId: 1
+    #   accessTokenFile: '{{ROOT}}/newapi/access-token'
+    #   channels:
+    #     workbuddy: 1     # 改成 New API 里 WorkBuddy 渠道的真实 id
+    #     qoder: 2         # 改成 Qoder 渠道的真实 id
+    #   priorities:
+    #     preferred: 10
+    #     fallback: 5
+
+# 2) DSH 模型 provider：合并到现有 llm-pi-ai 条目的 providers: 下
+#    （如果已有 free-egg provider，只需把 baseURL 指到 New API 并核对模型名）
+      free-egg:
+        displayName: Free Egg
+        apiKeyEnv: FREE_EGG_API_KEY
+        api: openai-completions
+        baseURL: 'http://127.0.0.1:{{NEWAPI_PORT}}/v1'
+        reasoning: max
+        defaultContextWindow: 1000000
+        defaultMaxTokens: 131072
+        retryPolicy:
+          mode: normal
+          maxRetries: 3
+        models:
+          - id: deepseek-v4.1-flash
+            name: DeepSeek-V4.1-Flash
+            contextWindow: 1000000
+            maxTokens: 393216
+            input: [text, image]
+            reasoningEfforts:
+              low: low
+              high: high
+              max: max
+          - id: qwen3.8-flash
+            name: Qwen3.8-Flash (Free)
+            contextWindow: 1000000
+            maxTokens: 131072
+            input: [text, image]
+            reasoningEfforts:
+              "off": null
+              low: low
+              medium: medium
+              xhigh: xhigh

@@ -1,8 +1,8 @@
 {
   "name": "dsh-free-egg-credits",
-  "version": "1.5.3",
+  "version": "1.6.0",
   "type": "module",
-  "description": "Free Egg 积分：在 DSH 侧边栏查看 WorkBuddy / Qoder 账号积分、今日额度、签到状态与每轮消耗，并支持一键切换优先消耗平台。",
+  "description": "Free Egg 积分：在 DSH 侧边栏查看 WorkBuddy / Qoder 账号积分、今日额度、签到状态与每轮消耗，支持一键切换优先消耗平台，并附网关 + New API 一键部署脚本。",
   "license": "MIT",
   "author": "dsh-free-egg-credits contributors",
   "homepage": "https://github.com/Yhx888/dsh-free-egg-credits#readme",
@@ -34,7 +34,9 @@
     "quota",
     "balance",
     "checkin",
-    "sidebar"
+    "sidebar",
+    "one-click",
+    "installer"
   ],
   "exports": {
     ".": "./index.js",
@@ -49,7 +51,8 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
-    "README.en.md"
+    "README.en.md",
+    "install/"
   ],
   "dsh": {
     "bundle": {
