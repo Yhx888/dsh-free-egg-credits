@@ -34,7 +34,7 @@ powershell -ExecutionPolicy Bypass -File .\install\windows.ps1
 脚本会下载并校验三个组件、写入配置、隐藏启动，并在安装目录生成：
 
 - `使用指引.md`：WorkBuddy / Qoder / New API 三个面板的登录步骤、渠道配置、DSH 接入；
-- `dsh-snippets.yml`：插件配置与 DSH provider 片段，复制进 profile 的 `cordis.patch.yml` 即可。
+- `dsh-snippets.yml` + `dsh-provider.yml`：插件配置与 DSH provider 片段，合并进 profile 的 `cordis.patch.yml` 即可。
 
 默认装到 `%LOCALAPPDATA%\FreeEggStack`，三个服务只监听 `127.0.0.1`（7863 / 8790 / 3001）。想先看计划加 `-DryRun`；只装其中一个加 `-SkipQoder` / `-SkipNewApi`；完整参数见 [install/README.md](install/README.md)。
 

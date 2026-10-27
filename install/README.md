@@ -35,7 +35,7 @@ powershell -ExecutionPolicy Bypass -File .\install\windows.ps1
 | `-WbPort` / `-QoderPort` / `-NewApiPort` | 三个端口，默认 `7863` / `8790` / `3001` |
 | `-Profile` | DSH profile 名，默认 `desktop`；装了插件且检测到 profile 时自动写入插件配置 |
 | `-SkipWorkBuddy` / `-SkipQoder` / `-SkipNewApi` | 跳过某个组件 |
-| `-SkipPluginConfig` | 不碰 `cordis.patch.yml`，只生成 `dsh-snippets.yml` |
+| `-SkipPluginConfig` | 不碰 `cordis.patch.yml`，只生成 `dsh-snippets.yml` / `dsh-provider.yml` |
 | `-NoStart` | 只安装，不启动 |
 | `-AutoStart` | 注册登录自启（HKCU Run，名 `FreeEggStack`） |
 | `-Force` | 覆盖组件与配置（账号、数据库、密钥不会被删） |
@@ -52,7 +52,8 @@ powershell -ExecutionPolicy Bypass -File .\install\windows.ps1
 ├─ stop-stack.ps1   只停本目录启动的进程
 ├─ status.ps1       查看三个端口状态
 ├─ 使用指引.md       登录 + 配置的完整步骤
-└─ dsh-snippets.yml 插件配置 / DSH provider 片段
+├─ dsh-snippets.yml 插件配置段
+└─ dsh-provider.yml DSH provider 片段
 ```
 
 ## 升级与卸载

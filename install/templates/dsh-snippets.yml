@@ -24,37 +24,3 @@
     #   priorities:
     #     preferred: 10
     #     fallback: 5
-
-# 2) DSH 模型 provider：合并到现有 llm-pi-ai 条目的 providers: 下
-#    （如果已有 free-egg provider，只需把 baseURL 指到 New API 并核对模型名）
-      free-egg:
-        displayName: Free Egg
-        apiKeyEnv: FREE_EGG_API_KEY
-        api: openai-completions
-        baseURL: 'http://127.0.0.1:{{NEWAPI_PORT}}/v1'
-        reasoning: max
-        defaultContextWindow: 1000000
-        defaultMaxTokens: 131072
-        retryPolicy:
-          mode: normal
-          maxRetries: 3
-        models:
-          - id: deepseek-v4.1-flash
-            name: DeepSeek-V4.1-Flash
-            contextWindow: 1000000
-            maxTokens: 393216
-            input: [text, image]
-            reasoningEfforts:
-              low: low
-              high: high
-              max: max
-          - id: qwen3.8-flash
-            name: Qwen3.8-Flash (Free)
-            contextWindow: 1000000
-            maxTokens: 131072
-            input: [text, image]
-            reasoningEfforts:
-              "off": null
-              low: low
-              medium: medium
-              xhigh: xhigh

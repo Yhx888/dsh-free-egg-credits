@@ -13,8 +13,8 @@
   - 自动写入 `config.json`、生成随机 `api_key` / Qoder 面板密码，并隐藏启动三个服务；
   - 生成 `start-stack.ps1` / `stop-stack.ps1` / `status.ps1`（幂等、只停本安装目录的进程）；
   - 生成《使用指引》：WorkBuddy / Qoder / New API 三个面板的登录步骤、渠道配置、DSH 接入；
-  - 生成 `dsh-snippets.yml`，检测到已安装本插件时自动把插件配置追加到对应 profile 的
-    `cordis.patch.yml`（带时间戳备份）。
+  - 生成 `dsh-snippets.yml`（插件段）与 `dsh-provider.yml`（DSH provider 段），检测到已安装本插件时
+    自动把插件配置追加到对应 profile 的 `cordis.patch.yml`（带时间戳备份）。
 - **Qoder 零依赖运行**：安装器下载 Python 3.12 embeddable 到 `qoder/python/`，不要求本机预装 Python；
   `_pth` 用相对路径，整个安装目录可以整体搬移。
 - 支持 `-DryRun` / `-SkipWorkBuddy` / `-SkipQoder` / `-SkipNewApi` / `-NoStart` / `-AutoStart` 等参数，

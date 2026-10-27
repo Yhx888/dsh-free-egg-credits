@@ -391,7 +391,8 @@ $snipMap = @{
     '{{NEWAPI_PORT}}' = [string]$NewApiPort
 }
 Render-Template 'dsh-snippets.yml' $snipMap
-Write-Ok '使用指引.md / dsh-snippets.yml 已生成'
+Render-Template 'dsh-provider.yml' $snipMap
+Write-Ok '使用指引.md / dsh-snippets.yml / dsh-provider.yml 已生成'
 
 Install-DshPluginConfig
 
@@ -433,7 +434,7 @@ if (-not $SkipQoder) {
 if (-not $SkipNewApi) { Write-Host ('   3) New API        http://127.0.0.1:' + $NewApiPort + '/') -ForegroundColor Cyan }
 Write-Host ''
 Write-Host ('   完整步骤：' + (Join-Path $InstallRoot '使用指引.md')) -ForegroundColor White
-Write-Host ('   DSH 片段：' + (Join-Path $InstallRoot 'dsh-snippets.yml')) -ForegroundColor White
+Write-Host ('   DSH 片段：' + (Join-Path $InstallRoot 'dsh-snippets.yml') + ' + dsh-provider.yml') -ForegroundColor White
 Write-Host ''
 Write-Host '  提示：三个服务只监听本机，不要把端口暴露到公网。' -ForegroundColor DarkGray
 Write-Host ''

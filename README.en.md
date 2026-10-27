@@ -40,7 +40,7 @@ powershell -ExecutionPolicy Bypass -File .\install\windows.ps1
 It downloads and SHA256-verifies the three upstream components, writes their configs, starts them hidden on `127.0.0.1` (ports 7863 / 8790 / 3001), and generates:
 
 - `使用指引.md` — step-by-step account login for the WorkBuddy / Qoder / New API panels, channel setup and DSH wiring;
-- `dsh-snippets.yml` — the plugin config and DSH provider snippet to merge into your profile's `cordis.patch.yml`.
+- `dsh-snippets.yml` + `dsh-provider.yml` — the plugin config and DSH provider snippet to merge into your profile's `cordis.patch.yml`.
 
 Default install root: `%LOCALAPPDATA%\FreeEggStack`. Add `-DryRun` to preview, `-SkipQoder` / `-SkipNewApi` to omit a component; full options in [install/README.md](install/README.md).
 

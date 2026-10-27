@@ -1,0 +1,37 @@
+# ============================================================
+# Free Egg Credits · DSH provider 片段
+# 合并到 profile 的 cordis.patch.yml 里 llm-pi-ai 条目的 config.providers: 下。
+# 注意：粘贴后整体缩进 6 个空格，与现有 provider 同级；
+# 已有 free-egg 的话只改 baseURL 并核对模型名。
+# ============================================================
+free-egg:
+  displayName: Free Egg
+  apiKeyEnv: FREE_EGG_API_KEY
+  api: openai-completions
+  baseURL: 'http://127.0.0.1:{{NEWAPI_PORT}}/v1'
+  reasoning: max
+  defaultContextWindow: 1000000
+  defaultMaxTokens: 131072
+  retryPolicy:
+    mode: normal
+    maxRetries: 3
+  models:
+    - id: deepseek-v4.1-flash
+      name: DeepSeek-V4.1-Flash
+      contextWindow: 1000000
+      maxTokens: 393216
+      input: [text, image]
+      reasoningEfforts:
+        low: low
+        high: high
+        max: max
+    - id: qwen3.8-flash
+      name: Qwen3.8-Flash (Free)
+      contextWindow: 1000000
+      maxTokens: 131072
+      input: [text, image]
+      reasoningEfforts:
+        "off": null
+        low: low
+        medium: medium
+        xhigh: xhigh
